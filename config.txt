@@ -1,0 +1,74 @@
+# /boot/config.txt (or /boot/firmware/config.txt) Configuration
+# For Raspberry Pi 4 running Crankshaft NG with MCP2515 CAN HAT and Composite Video Output (PAL 16:9)
+# Target: Audi RNS-E Video Input via Multimedia Adapter
+# Status: Beta 1 / 2025-05-02
+
+# --- Base Settings & Overlays ---
+# Uncomment if you get no picture on HDMI for a default "safe" mode
+#hdmi_safe=1
+
+# Disable overscan (0 enables overscan compensation, 1 disables it entirely)
+# Set to 0 initially, adjust specific values if needed
+disable_overscan=0
+overscan_left=0
+overscan_right=0
+overscan_top=0
+overscan_bottom=0
+
+# --- Audio ---
+# Enable audio (loads snd_bcm2835)
+dtparam=audio=on
+
+# --- CAN HAT (MCP2515) ---
+# WARNING: Verify oscillator and interrupt values match your specific CAN HAT!
+dtparam=spi=on
+dtoverlay=mcp2515-can0,oscillator=12000000,interrupt=25,spimaxfrequency=1000000
+
+# --- Composite Video Output (TV Out) ---
+# Enable composite video output
+enable_tvout=1
+# Set video standard: 0=NTSC, 1=NTSC-J, 2=PAL, 3=PAL-M
+sdtv_mode=2 # PAL for Europe/RNS-E
+# Set aspect ratio: 1=4:3, 2=14:9, 3=16:9
+sdtv_aspect=3 # 16:9 for RNS-E widescreen
+# Optionally ignore HDMI connection entirely
+hdmi_ignore_hotplug=1
+
+# --- Graphics Driver ---
+# Enable DRM VC4 V3D driver using FKMS (Firmware KMS)
+# The 'composite=1' parameter can help prioritize composite output
+dtoverlay=vc4-fkms-v3d,composite=1
+# Required for FKMS driver
+max_framebuffers=2
+
+# --- Pi 4 Specific Settings ---
+[pi4]
+# Optional: Enable performance boost
+arm_boost=1
+# Set GPU memory (128MB is often sufficient)
+gpu_mem=128
+
+[all]
+# Optional: Scale the framebuffer to help with overscan issues if needed
+# overscan_scale=1
+
+# --- Other Customizations ---
+# Enable I2C if needed
+# dtparam=i2c_arm=on
+
+# Custom power settings (Allow higher USB current)
+max_usb_current=1
+
+# Disable the PWR LED
+dtparam=pwr_led_trigger=none
+dtparam=pwr_led_activelow=off
+
+# Disable Rainbow splash screen on boot
+disable_splash=1
+
+# Enable system Watchdog
+dtparam=watchdog=on
+
+# Boot time tweaks (may vary)
+# boot_delay=0
+# initial_turbo=30
