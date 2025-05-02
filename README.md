@@ -267,6 +267,30 @@ dtoverlay=vc4-fkms-v3d,composite=1
 # Ggf. hdmi_ignore_hotplug=1
 ```
 
+**Step 13: Adjust Overscan Settings**
+    * **Ensure Overscan Compensation is Enabled:** Make sure the line `disable_overscan=1` is either commented out (with a `#` at the beginning) or set to `disable_overscan=0`. If the line is missing, compensation is usually enabled by default (`0`).
+    * **Locate Overscan Margins:** Find these lines (they might be commented out initially):
+      ```text
+      #overscan_left=16
+      #overscan_right=16
+      #overscan_top=16
+      #overscan_bottom=16
+      ```
+    * **Experiment with Values:** You need to adjust these values through trial and error.
+        * **Positive values** increase the black border on that side (pushing the image away from that edge).
+        * **Negative values** decrease the black border (pulling the image towards that edge, potentially off-screen).
+        * **Guidance:**
+            * If the picture is shifted **left** (too much border on the right): Decrease `overscan_right` (e.g., `overscan_right=-16`) OR increase `overscan_left` (e.g., `overscan_left=16`).
+            * If the picture is shifted **right**: Decrease `overscan_left` OR increase `overscan_right`.
+            * If the picture is shifted **up**: Decrease `overscan_bottom` OR increase `overscan_top`.
+            * If the picture is shifted **down**: Decrease `overscan_top` OR increase `overscan_bottom`.
+        * Start with changes in increments of 8 or 16. Uncomment the lines you want to change by removing the leading `#`.
+    * **Save and Reboot (Repeat):**
+    * **Save** the changes in `nano` (`Ctrl+O`, `Enter`, `Ctrl+X`).
+    * **Reboot** the Raspberry Pi: `sudo reboot`.
+    * **Check** the result on the composite display.
+    * **Repeat** steps 3 and 4, adjusting the values iteratively until the picture is centered correctly. This usually takes several reboots.
+
 ## Configuration
 
 The main parts to configure in `/home/pi/can_keyboard_control.py` are:
