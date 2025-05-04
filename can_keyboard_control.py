@@ -1,83 +1,110 @@
 #!/usr/bin/env python3
 # Import necessary libraries
 import can
-import os
-import subprocess
-import time # Needed for cooldown logic
+import time # Needed for cooldown logic and sleep
+from pynput.keyboard import Key, Controller # Use pynput for key simulation
 
 # --- Configuration ---
 CAN_INTERFACE = 'can0' # CAN interface name
 # Target CAN ID for Audi RNS-E MMI controls (TV Mode)
 TARGET_CAN_ID = 0x461
-# Cooldown period in seconds to prevent rapid key repeats
+# Cooldown period in seconds to prevent rapid key repeats (for non-scroll actions)
 COOLDOWN_PERIOD = 0.3 # 300 ms
-# Commands exempt from cooldown (e.g., rotary knob for scrolling)
+# Threshold for long press detection (adjust based on testing)
+# How many 'press' messages count as a long press?
+LONG_PRESS_THRESHOLD = 5
+
+# Commands exempt from cooldown AND executed immediately on press (e.g., scrolling)
 # Add command tuples (Byte 3, Byte 4) for knob left/right here
 SCROLL_COMMANDS = {
-    (0, 32), # MMI Knob Left (Hex 00 20)
-    (0, 64)  # MMI Knob Right (Hex 00 40)
+    (0, 32), # MMI Knob left (Hex 00 20 -> mapped to '2')
+    (0, 64)  # MMI Knob right (Hex 00 40 -> mapped to '1')
 }
 
-# Mapping: Tuple(Decimal_Byte_3, Decimal_Byte_4) -> xdotool key name
-# Action is triggered only when Byte 2 == 1 (key press event)
-# ----- Key Mapping (Adjust as needed - Beta 1.1 / 2025-05-01) -----
-COMMAND_TO_KEY = {
-    # (Decimal Byte 3, Decimal Byte 4) : Keyboard Key
-    (1, 0):   'V',       # 0x01 0x00 -> Prev Track -> Key 'V'
-    (2, 0):   'N',       # 0x02 0x00 -> Next Track -> Key 'N'
-    (64, 0):  'Up',      # 0x40 0x00 -> MMI Upper Left -> Arrow Up
-    (128, 0): 'Down',    # 0x80 0x00 -> MMI Lower Left -> Arrow Down
-    (0, 16):  'Return',  # 0x00 0x10 -> MMI Knob Press -> Enter Key ('Return' is xdotool name)
-    (0, 32):  '2',       # 0x00 0x20 -> MMI Knob Left -> Key '2'
-    (0, 64):  '1',       # 0x00 0x40 -> MMI Knob Right -> Key '1'
-    (0, 2):   'Escape',  # 0x00 0x02 -> Return Button Press -> Escape Key
-    (0, 1):   'H'        # 0x00 0x01 -> Setup Button Press -> Key 'H'
-    # --- Add more mappings if needed ---
+# --- Key Mappings ---
+# NOTE: Key names are now for pynput!
+# Standard keys: Key.up, Key.down, Key.left, Key.right, Key.enter, Key.esc, Key.home, Key.media_play_pause
+# Character keys: '1', '2', 'v', 'n', 'h' (usually lowercase)
+
+# Mapping for SHORT Press actions
+COMMAND_TO_KEY_SHORT = {
+    # (Decimal Byte 3, Decimal Byte 4) : pynput Key
+    (1, 0):   'v',       # 0x01 0x00 -> Prev Track -> Key 'V'
+    (2, 0):   'n',       # 0x02 0x00 -> Next Track -> Key 'N'
+    (64, 0):  Key.up,    # 0x40 0x00 -> MMI Upper Left -> Arrow Up
+    (128, 0): Key.down,  # 0x80 0x00 -> MMI Lower Left -> Arrow Down
+    (0, 16):  Key.enter, # 0x00 0x10 -> MMI Knob Press -> Enter Key
+    (0, 32):  '2',       # 0x00 0x20 -> MMI Knob Left -> Key '2' (Scroll command, also handled on press)
+    (0, 64):  '1',       # 0x00 0x40 -> MMI Knob Right -> Key '1' (Scroll command, also handled on press)
+    (0, 2):   Key.esc,   # 0x00 0x02 -> Return Button Press -> Escape Key
+    (0, 1):   'h'        # 0x00 0x01 -> Setup Button Press -> Key 'H'
+}
+
+# !!! DEFINE YOUR LONG PRESS ACTIONS HERE !!!
+# Mapping for LONG Press actions (holding the button)
+# NOTE: Using pynput Key objects/strings
+COMMAND_TO_KEY_LONG = {
+    # (Decimal Byte 3, Decimal Byte 4) : pynput Key or None
+    (1, 0):   None,      # Long press Prev Track -> No Action
+    (2, 0):   None,      # Long press Next Track -> No Action
+    (64, 0):  None,      # Long press MMI Upper Left -> No Action
+    (128, 0): None,      # Long press MMI Lower Left -> No Action
+    (0, 16):  Key.media_play_pause, # Long press MMI Knob -> Play/Pause
+    (0, 32):  None,      # Long press MMI Knob Left -> Ignored (Scroll command)
+    (0, 64):  None,      # Long press MMI Knob Right -> Ignored (Scroll command)
+    (0, 2):   'p',       # Long press Return Button -> Phone Key 'p'
+    (0, 1):   'm'        # Long press Setup Button -> Voice Cmd Key 'm'
 }
 # --- End Configuration ---
 
-# Function to simulate a key press using xdotool
+# Initialize pynput keyboard controller
+try:
+    keyboard = Controller()
+except Exception as e:
+    print(f"FATAL: Could not initialize pynput keyboard controller: {e}")
+    print("Check your graphical environment / permissions. Exiting.")
+    exit() # Exit if controller cannot be initialized
+
+# Function to simulate a key press using pynput
 def simulate_key(key_name):
-    """ Calls xdotool to simulate a key press. """
+    """ Simulates a key press using pynput. """
+    if key_name is None:
+        print("  No action defined for this long press.")
+        return # Do nothing if action is None
+
     try:
-        # Note: Using German for output messages as per conversation history
-        # Change to English if preferred: print(f"Simulating key press: {key_name}")
-        print(f"Simuliere Tastendruck: {key_name}")
-        # Note: 'key' simulates a brief press (down + up)
-        subprocess.run(['xdotool', 'key', key_name], check=True)
-    except FileNotFoundError:
-        print("FEHLER: 'xdotool' nicht gefunden. Bitte installieren (sudo apt install xdotool)")
-    except subprocess.CalledProcessError as e:
-        print(f"FEHLER beim Ausführen von xdotool: {e}")
+        print(f"Simulating pynput key press: {key_name}")
+        keyboard.press(key_name)
+        time.sleep(0.05) # Short delay between press and release
+        keyboard.release(key_name)
     except Exception as e:
-        print(f"Allgemeiner Fehler bei simulate_key: {e}")
+        # Catch potential errors during press/release
+        print(f"ERROR during pynput simulate_key: {e}")
 
 # Main program loop
 if __name__ == "__main__":
-    # Note: Using German for output messages as per conversation history
-    # Change to English if preferred.
-    print(f"Starte Audi RNS-E CAN Listener auf {CAN_INTERFACE} für ID {hex(TARGET_CAN_ID)}...")
-    print(f"Achte darauf, dass '{CAN_INTERFACE}' konfiguriert und UP ist (z.B. sudo ip link set {CAN_INTERFACE} up type can bitrate 100000)")
-    print(f"Stelle sicher, dass xdotool installiert ist (sudo apt install xdotool)")
+    print(f"Starting Audi RNS-E CAN Listener on {CAN_INTERFACE} for ID {hex(TARGET_CAN_ID)}...")
+    print(f"Using Long Press detection and pynput.")
+    print(f"Ensure '{CAN_INTERFACE}' is up (e.g., sudo ip link set {CAN_INTERFACE} up type can bitrate 100000)")
 
     bus = None
     # Variables for cooldown logic
     last_processed_command = None
     last_processed_time = 0.0
+    # Dictionary to store press counters for long press detection
+    press_counters = {}
 
-    while True: # Loop forever for continuous operation
+    while True:
         try:
             # Initialize / Re-initialize CAN bus if needed
             if bus is None:
-                 print("Versuche CAN Bus zu initialisieren...")
+                 print("Attempting to initialize CAN Bus...")
                  try:
-                     # Attempt bus initialization
                      bus = can.interface.Bus(channel=CAN_INTERFACE, bustype='socketcan', receive_own_messages=False)
-                     print(f"CAN Bus {CAN_INTERFACE} erfolgreich initialisiert.")
+                     print(f"CAN Bus {CAN_INTERFACE} initialized successfully.")
                  except Exception as init_e:
-                     # Handle initialization error
-                     print(f"Fehler bei CAN Bus Initialisierung: {init_e}")
-                     print("Warte 10 Sekunden vor nächstem Versuch...")
+                     print(f"Error initializing CAN Bus: {init_e}")
+                     print("Waiting 10 seconds before retry...")
                      time.sleep(10)
                      continue # Go back to the start of the while loop
 
@@ -87,76 +114,85 @@ if __name__ == "__main__":
             if message:
                 # Check if it's the target CAN ID
                 if message.arbitration_id == TARGET_CAN_ID:
-                    # Log received message data (hex) for diagnostics
-                    print(f"Empfangen: ID={hex(message.arbitration_id)}, DLC={message.dlc}, Daten={message.data.hex()}")
+                    # Optional: Reduced logging for cleaner output once stable
+                    # print(f"Recv: {message.data.hex()}")
 
-                    # Check if message length is sufficient (min 5 bytes for index 4)
-                    # AND if Byte 2 indicates key press (value 1)
-                    if message.dlc >= 5 and message.data[2] == 1:
-                        # Extract relevant bytes (3 and 4) as INTEGERS
+                    # Check message length and process based on Byte 2 (Press/Release)
+                    if message.dlc >= 5:
                         byte3 = message.data[3]
                         byte4 = message.data[4]
-                        # Create tuple for dictionary lookup
                         command_tuple = (byte3, byte4)
-                        print(f"  Tastendruck erkannt (Byte 2 = 1). Prüfe Befehlscode (Byte 3, Byte 4): {command_tuple}")
 
-                        # Find corresponding key name in mapping
-                        key_to_simulate = COMMAND_TO_KEY.get(command_tuple)
-                        # Get current time for cooldown check
-                        current_time = time.time()
+                        # --- Handle Key Press (Byte 2 == 1) ---
+                        if message.data[2] == 1:
+                            press_counters[command_tuple] = press_counters.get(command_tuple, 0) + 1
+                            # Execute scroll commands immediately on press
+                            if command_tuple in SCROLL_COMMANDS:
+                                print(f"  Scroll Command Press: {command_tuple}")
+                                key_to_simulate = COMMAND_TO_KEY_SHORT.get(command_tuple) # Scroll uses short press mapping
+                                if key_to_simulate:
+                                    simulate_key(key_to_simulate)
+                                # else: # Optional: Log if scroll command has no mapping
+                                #    print(f"  No scroll action defined for {command_tuple}.")
 
-                        if key_to_simulate:
-                            # Check cooldown, unless it's an exempt scroll command
-                            is_scroll_command = command_tuple in SCROLL_COMMANDS
-                            if is_scroll_command or \
-                               command_tuple != last_processed_command or \
-                               current_time - last_processed_time > COOLDOWN_PERIOD:
+                        # --- Handle Key Release (Byte 2 == 4) ---
+                        elif message.data[2] == 4:
+                            if command_tuple in press_counters and press_counters[command_tuple] > 0:
+                                count = press_counters[command_tuple]
+                                press_counters[command_tuple] = 0 # Reset counter
+                                # print(f"  Key Released: {command_tuple}, Count={count}") # Debugging
 
-                                # Cooldown inactive or exception -> simulate key
-                                simulate_key(key_to_simulate)
-                                # Store state for next cooldown check
-                                last_processed_command = command_tuple
-                                last_processed_time = current_time
-                            else:
-                                # Same command within cooldown period (and not a scroll command)
-                                print(f"  Ignoriere Code-Tuple {command_tuple} (Cooldown aktiv). Letzte Ausführung vor {current_time - last_processed_time:.2f}s)")
-                        else:
-                            # Log if the command tuple is not defined in the mapping
-                            print(f"  Keine Aktion für Code-Tuple {command_tuple} definiert.")
-                    # Optional: Handle key release (Byte 2 == 4) here if needed
-                    # elif message.dlc >= 5 and message.data[2] == 4:
-                    #     print("  Key Released (Byte 2 = 4). No action taken.")
+                                # Determine action type (ignore release for scroll commands)
+                                if command_tuple not in SCROLL_COMMANDS:
+                                    is_long_press = (count > LONG_PRESS_THRESHOLD)
+                                    if is_long_press:
+                                        print(f"  Long Press detected.")
+                                        key_to_simulate = COMMAND_TO_KEY_LONG.get(command_tuple)
+                                    else:
+                                        print(f"  Short Press detected.")
+                                        key_to_simulate = COMMAND_TO_KEY_SHORT.get(command_tuple)
 
-            # Timeout occurred, loop continues...
+                                    # Execute action if found, respecting cooldown
+                                    if key_to_simulate:
+                                        current_time = time.time()
+                                        if command_tuple != last_processed_command or \
+                                           current_time - last_processed_time > COOLDOWN_PERIOD:
+
+                                            simulate_key(key_to_simulate)
+                                            last_processed_command = command_tuple
+                                            last_processed_time = current_time
+                                        else:
+                                            print(f"  Ignoring {command_tuple} (Cooldown). Last action {current_time - last_processed_time:.2f}s ago.")
+                                    # else: # Optional: Log if no action mapped for this press type
+                                    #    print(f"  No {'long' if is_long_press else 'short'} press action defined for {command_tuple}.")
 
         except can.CanError as e:
-            # Handle CAN communication errors (e.g., bus issues, interface down)
-            print(f"CAN Fehler aufgetreten: {e}")
+            # Handle CAN communication errors
+            print(f"CAN Error occurred: {e}")
             if bus is not None:
-                print("Fahre CAN Bus herunter...")
+                print("Shutting down CAN Bus...")
                 bus.shutdown()
-                bus = None # Signal to re-initialize in the next loop iteration
-            print("Warte 5 Sekunden vor nächstem Versuch...")
-            time.sleep(5) # Wait briefly before restarting the loop
+                bus = None # Signal to re-initialize
+            print("Waiting 5 seconds before retry...")
+            time.sleep(5)
 
         except KeyboardInterrupt:
             # Handle clean exit on Ctrl+C
-            print("\nSkript wird beendet (Strg+C).")
-            break # Exit the while True loop
+            print("\nScript exiting (Ctrl+C received).")
+            break # Exit the while loop
 
         except Exception as e:
             # Catch other unexpected errors
-            print(f"Ein unerwarteter Fehler ist aufgetreten: {e}")
+            print(f"An unexpected error occurred: {e}")
             if bus is not None:
-                 # Cleanup on unexpected error
                  bus.shutdown()
                  bus = None
-                 print("Warte 10 Sekunden...")
+            print("Waiting 10 seconds...")
             time.sleep(10)
 
-    # Cleanup after loop exit (only on KeyboardInterrupt)
+    # Cleanup after loop exit
     if bus is not None:
-        print("Schließe CAN-Bus.")
+        print("Closing CAN Bus.")
         bus.shutdown()
 
-    print("Programm beendet.")
+    print("Program terminated.")
