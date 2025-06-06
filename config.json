@@ -1,0 +1,107 @@
+{
+  "can_interface": "can0",
+  "zmq": {
+    "publish_address": "ipc:///tmp/can_stream.ipc"
+  },
+  "can_ids": {
+    "light_status": "0x635",
+    "time_data": "0x623",
+    "ignition_status": "0x2C3",
+    "tv_presence": "0x602",
+    "fis_line1": "0x265",
+    "fis_line2": "0x267",
+    "speed": "0x5A2",
+    "rpm": "0x5A0",
+    "media_status": "0x6C1",
+    "nav_status": "0x6C0",
+    "mmi": "0x461",
+    "mfsw": "0x5C3",
+    "source": "0x661"
+  },
+  "features": {
+    "day_night_mode": true,
+    "time_sync": true,
+    "auto_shutdown": {
+      "enabled": true,
+      "trigger": "ignition_off"
+    },
+    "tv_simulation": {
+      "enabled": true
+    },
+    "fis_display": {
+      "enabled": true,
+      "line1": "Crank",
+      "line2": "Shaft"
+    },
+    "media_control": true,
+    "mmi_controls": true,
+    "mfsw_controls": true,
+    "system_actions": true,
+    "light_sensor_installed": true,
+    "car_time_zone": "Europe/Lisbon",
+    "debug_mode": false
+  },
+  "paths": {
+    "crankshaft_daynight_script": "/opt/crankshaft/service_daynight.sh"
+  },
+  "thresholds": {
+    "cooldown_period": 0.3,
+    "long_press_duration": 2.0,
+    "extended_long_press_duration": 9.0,
+    "shutdown_delay_ignition_off_seconds": 5,
+    "time_sync_threshold_minutes": 1.0
+  },
+  "mmi_scroll_commands": ["0,32", "0,64"],
+  "key_mappings": {
+    "mmi_short": {
+      "1,0": "v",
+      "2,0": "n",
+      "64,0": "Key.up",
+      "128,0": "Key.down",
+      "0,16": "Key.enter",
+      "0,32": "2",
+      "0,64": "1",
+      "0,2": "Key.esc",
+      "0,1": "h"
+    },
+    "mmi_long": {
+      "1,0": null,
+      "2,0": null,
+      "64,0": null,
+      "128,0": "m",
+      "0,16": null,
+      "0,32": null,
+      "0,64": null,
+      "0,2": "0",
+      "0,1": null
+    },
+    "mmi_extended": {
+      "1,0": null,
+      "2,0": "sudo shutdown -h now",
+      "64,0": null,
+      "128,0": null,
+      "0,16": "sudo reboot",
+      "0,32": null,
+      "0,64": null,
+      "0,2": null,
+      "0,1": null
+    },
+    "mfsw_commands": {
+      "scroll_up": "0x04",
+      "scroll_down": "0x05",
+      "mode_press": "0x08",
+      "release": ["0x00", "0x00"]
+    },
+    "mfsw": {
+      "scroll_up": "Key.media_volume_up",
+      "scroll_down": "Key.media_volume_down",
+      "mode_short": "Key.enter",
+      "mode_long": "Key.media_next"
+    }
+  },
+  "source_data": {
+    "tv_mode": ["0x37"],
+    "play_key": "x",
+    "pause_key": "c"
+  }
+}
