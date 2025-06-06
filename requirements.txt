@@ -1,0 +1,6 @@
+python-can
+pyzmq
+pyserial
+pynput
+pytz
+unidecode
