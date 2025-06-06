@@ -1,0 +1,15 @@
+[Unit]
+Description=CAN Handler Service
+Requires=configure-can0.service
+After=configure-can0.service
+
+[Service]
+User=pi
+Group=pi
+WorkingDirectory=/home/pi/
+ExecStart=/usr/bin/python3 /home/pi/can_handler.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

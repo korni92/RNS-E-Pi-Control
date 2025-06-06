@@ -1,0 +1,15 @@
+[Unit]
+Description=Crankshaft CAN Features Service
+Requires=can-handler.service
+After=can-handler.service
+
+[Service]
+User=pi
+Group=pi
+WorkingDirectory=/home/pi/
+ExecStart=/usr/bin/python3 /home/pi/crankshaft_can_features.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
