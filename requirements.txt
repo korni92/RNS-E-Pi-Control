@@ -1,6 +1,10 @@
+python3
+can-utils
+python3-pip
 python-can
 pyzmq
 pyserial
 pynput
 pytz
 unidecode
+can-utils
