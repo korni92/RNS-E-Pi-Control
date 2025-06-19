@@ -1,15 +1,15 @@
 #!/bin/bash
 
 # ==============================================================================
-# RNS-E Pi Control - Management Script (v3.1)
+# RNS-E Pi Control - Management Script (v3.1 - Corrected)
 # ==============================================================================
 # This script installs, checks, updates, and verifies the CAN-Bus control
 # scripts from the korni92/RNS-E-Pi-Control repository for a read-only
 # Crankshaft OS environment. It includes an interactive configuration assistant.
 #
 # USAGE:
-#   sudo ./install.sh            (To run the main installation menu)
-#   sudo ./install.sh --verify   (To run post-reboot verification checks)
+#   sudo ./install.sh         (To run the main installation menu)
+#   sudo ./install.sh --verify  (To run post-reboot verification checks)
 # ==============================================================================
 
 # --- Script Setup ---
@@ -24,7 +24,7 @@ SERVICES=("configure-can0" "can-handler" "crankshaft-can-features" "can-keyboard
 # --- Helper Functions ---
 function print_header() {
     echo "====================================================="
-    echo "    RNS-E Pi Control - Management Script             "
+    echo "    RNS-E Pi Control - Management Script           "
     echo "====================================================="
     echo
 }
@@ -112,6 +112,7 @@ function update_scripts() {
     chown -R pi:pi "$REPO_DIR"
     
     echo "--> Re-installing Python dependencies..."
+    # Ensure requirements.txt is correct before this step!
     pip3 install -r requirements.txt
     
     echo "--> Restarting services to apply updates..."
@@ -157,7 +158,6 @@ function run_verification() {
     echo -e "\nVerification complete!"
 }
 
-
 # --- Full Installation Process ---
 function install_all() {
     print_header
@@ -177,6 +177,7 @@ function install_all() {
     git clone "$REPO_URL" "$REPO_DIR" && chown -R pi:pi "$REPO_DIR"
     
     echo "--> Installing Python dependencies..."
+    # This step requires a corrected requirements.txt file!
     [ -f "$REPO_DIR/requirements.txt" ] && pip3 install -r "$REPO_DIR/requirements.txt"
     
     echo "--> Configuring /etc/fstab..."
@@ -186,9 +187,15 @@ function install_all() {
     mount -a
     
     echo "--> Configuring /boot/config.txt..."
+    # Remove old entries first to prevent duplication
+    sed -i "/^# --- Added by RNS-E Pi Control Install Script ---.*/d" /boot/config.txt
+    sed -i "/^dtparam=spi=on.*/d" /boot/config.txt
+    sed -i "/^dtoverlay=mcp2515-can0.*/d" /boot/config.txt
+    sed -i "/^# --- Composite Video enabled by script ---.*/d" /boot/config.txt
+    sed -i "/^enable_tvout=1.*/d" /boot/config.txt
+    
     read -p "Enter oscillator frequency in Hz for MCP2515 (e.g., 8000000): " OSC_HZ
     read -p "Enter interrupt GPIO pin for MCP2515 (e.g., 25): " INT_PIN
-    sed -i "/dtoverlay=mcp2515-can0/d" /boot/config.txt
     {
         echo "# --- Added by RNS-E Pi Control Install Script ---"
         echo "dtparam=spi=on"
@@ -223,16 +230,113 @@ function install_all() {
     chown pi:pi "$CONFIG_FILE"
     echo "Configuration saved to $CONFIG_FILE."
 
-    echo "--> Creating systemd services..."
-    # Create all 5 service files using cat <<EOF ...
-    # This part is omitted for brevity. You must paste the full 'create_systemd_services' function from our previous conversation here.
+    # =========================================================================
+    # START OF CORRECTED SECTION
+    # =========================================================================
+    function create_systemd_services() {
+        echo "--> Creating and configuring systemd services..."
+
+        # Service 1: configure-can0
+        cat <<EOF > /etc/systemd/system/configure-can0.service
+[Unit]
+Description=Configure can0 Interface
+Wants=network.target
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=/sbin/ip link set can0 up type can bitrate 100000
+RemainAfterExit=true
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+        # Service 2: can-handler
+        cat <<EOF > /etc/systemd/system/can-handler.service
+[Unit]
+Description=RNS-E CAN-Bus Handler
+After=configure-can0.service
+BindsTo=configure-can0.service
+
+[Service]
+ExecStart=/usr/bin/python3 ${REPO_DIR}/can_handler.py
+WorkingDirectory=${REPO_DIR}
+Restart=always
+RestartSec=3
+User=pi
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+        # Service 3: crankshaft-can-features
+        cat <<EOF > /etc/systemd/system/crankshaft-can-features.service
+[Unit]
+Description=RNS-E Crankshaft CAN Features
+After=can-handler.service
+Wants=can-handler.service
+
+[Service]
+ExecStart=/usr/bin/python3 ${REPO_DIR}/crankshaft_can_features.py
+WorkingDirectory=${REPO_DIR}
+Restart=always
+RestartSec=3
+User=pi
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+        # Service 4: can-keyboard
+        cat <<EOF > /etc/systemd/system/can-keyboard.service
+[Unit]
+Description=RNS-E CAN-Bus Keyboard Simulation
+After=can-handler.service
+Wants=can-handler.service
+
+[Service]
+ExecStart=/usr/bin/python3 ${REPO_DIR}/can_keyboard.py
+WorkingDirectory=${REPO_DIR}
+Restart=always
+RestartSec=3
+User=pi
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+        # Service 5: can-fis-writer
+        cat <<EOF > /etc/systemd/system/can-fis-writer.service
+[Unit]
+Description=RNS-E FIS Display Writer
+After=can-handler.service
+Wants=can-handler.service
+
+[Service]
+ExecStart=/usr/bin/python3 ${REPO_DIR}/can_fis_writer.py
+WorkingDirectory=${REPO_DIR}
+Restart=always
+RestartSec=3
+User=pi
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    }
+
+    # Call the function defined above
+    create_systemd_services
+    # =========================================================================
+    # END OF CORRECTED SECTION
+    # =========================================================================
     
     echo "--> Finalizing installation..."
     systemctl daemon-reload && systemctl enable "${SERVICES[@]}"
     
     echo
     echo "==========================================="
-    echo "      INSTALLATION COMPLETE!               "
+    echo "        INSTALLATION COMPLETE!             "
     echo "==========================================="
     echo "A reboot is required for all changes to take effect."
     if ask_yes_no "Do you want to reboot now?"; then
