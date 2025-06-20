@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ==============================================================================
-# RNS-E Pi Control - Management Script (v3.1 - Corrected)
+# RNS-E Pi Control - Management Script (v3.2 - Final)
 # ==============================================================================
 # This script installs, checks, updates, and verifies the CAN-Bus control
 # scripts from the korni92/RNS-E-Pi-Control repository for a read-only
@@ -38,6 +38,31 @@ function ask_yes_no() {
             * ) echo "Please answer yes or no.";;
         esac
     done
+}
+
+# --- NEW: Function to check and install system packages ---
+function install_system_packages() {
+    local packages_to_install=()
+    # List of all required system packages, verified against all project scripts
+    local required_packages=("git" "python3-pip" "can-utils" "python3-unidecode" "python3-zmq")
+
+    echo "--> Checking for required system packages..."
+    for pkg in "${required_packages[@]}"; do
+        if ! dpkg -s "$pkg" &> /dev/null; then
+            echo "    - Package '$pkg' is missing."
+            packages_to_install+=("$pkg")
+        else
+            echo "    - Package '$pkg' is already installed."
+        fi
+    done
+
+    if [ ${#packages_to_install[@]} -ne 0 ]; then
+        echo "--> Installing missing system packages: ${packages_to_install[*]}"
+        apt-get update
+        apt-get install -y "${packages_to_install[@]}"
+    else
+        echo "--> All required system packages are already installed."
+    fi
 }
 
 # --- Core Management Functions ---
@@ -112,7 +137,6 @@ function update_scripts() {
     chown -R pi:pi "$REPO_DIR"
     
     echo "--> Re-installing Python dependencies..."
-    # Ensure requirements.txt is correct before this step!
     pip3 install -r requirements.txt
     
     echo "--> Restarting services to apply updates..."
@@ -169,21 +193,26 @@ function install_all() {
     echo "--> Remounting filesystems as read-write..."
     mount -o remount,rw / && mount -o remount,rw /boot
 
-    echo "--> Installing system packages..."
-    apt-get update && apt-get install -y git python3-pip can-utils python3-unidecode python3-zmq
+    # Call the new function to handle system package installation
+    install_system_packages
 
     echo "--> Cloning repository from ${REPO_URL}..."
     [ -d "$REPO_DIR" ] && rm -rf "$REPO_DIR"
     git clone "$REPO_URL" "$REPO_DIR" && chown -R pi:pi "$REPO_DIR"
     
-    echo "--> Installing Python dependencies..."
-    # This step requires a corrected requirements.txt file!
+    echo "--> Installing Python dependencies from requirements.txt..."
+    # pip handles "already satisfied" requirements efficiently itself.
     [ -f "$REPO_DIR/requirements.txt" ] && pip3 install -r "$REPO_DIR/requirements.txt"
     
-    echo "--> Configuring /etc/fstab..."
+    echo "--> Configuring /etc/fstab for read-only operation..."
     grep -qF "tmpfs /tmp" /etc/fstab || echo "tmpfs /tmp tmpfs defaults,noatime,nosuid,nodev,size=64m 0 0" >> /etc/fstab
     grep -qF "tmpfs /var/log" /etc/fstab || echo "tmpfs /var/log tmpfs defaults,noatime,nosuid,nodev,size=32m 0 0" >> /etc/fstab
     grep -qF "tmpfs /home/pi" /etc/fstab || echo "tmpfs /home/pi tmpfs defaults,noatime,uid=1000,gid=1000,mode=0755,size=16m 0 0" >> /etc/fstab
+    
+    echo "--> Creating temporary directories for fstab mounts..."
+    mkdir -p /tmp/.backlight /tmp/bluetooth /tmp/.local-pi /tmp/.config-pi /tmp/.cache-pi /tmp/.local-root /tmp/.config-root /tmp/.cache-root
+    
+    echo "--> Activating new fstab mounts..."
     mount -a
     
     echo "--> Configuring /boot/config.txt..."
@@ -230,106 +259,79 @@ function install_all() {
     chown pi:pi "$CONFIG_FILE"
     echo "Configuration saved to $CONFIG_FILE."
 
-    # =========================================================================
-    # START OF CORRECTED SECTION
-    # =========================================================================
     function create_systemd_services() {
         echo "--> Creating and configuring systemd services..."
-
-        # Service 1: configure-can0
         cat <<EOF > /etc/systemd/system/configure-can0.service
 [Unit]
 Description=Configure can0 Interface
 Wants=network.target
 After=network.target
-
 [Service]
 Type=oneshot
 ExecStart=/sbin/ip link set can0 up type can bitrate 100000
 RemainAfterExit=true
-
 [Install]
 WantedBy=multi-user.target
 EOF
-
-        # Service 2: can-handler
         cat <<EOF > /etc/systemd/system/can-handler.service
 [Unit]
 Description=RNS-E CAN-Bus Handler
 After=configure-can0.service
 BindsTo=configure-can0.service
-
 [Service]
 ExecStart=/usr/bin/python3 ${REPO_DIR}/can_handler.py
 WorkingDirectory=${REPO_DIR}
 Restart=always
 RestartSec=3
 User=pi
-
 [Install]
 WantedBy=multi-user.target
 EOF
-
-        # Service 3: crankshaft-can-features
         cat <<EOF > /etc/systemd/system/crankshaft-can-features.service
 [Unit]
 Description=RNS-E Crankshaft CAN Features
 After=can-handler.service
 Wants=can-handler.service
-
 [Service]
 ExecStart=/usr/bin/python3 ${REPO_DIR}/crankshaft_can_features.py
 WorkingDirectory=${REPO_DIR}
 Restart=always
 RestartSec=3
 User=pi
-
 [Install]
 WantedBy=multi-user.target
 EOF
-
-        # Service 4: can-keyboard
         cat <<EOF > /etc/systemd/system/can-keyboard.service
 [Unit]
 Description=RNS-E CAN-Bus Keyboard Simulation
 After=can-handler.service
 Wants=can-handler.service
-
 [Service]
 ExecStart=/usr/bin/python3 ${REPO_DIR}/can_keyboard.py
 WorkingDirectory=${REPO_DIR}
 Restart=always
 RestartSec=3
 User=pi
-
 [Install]
 WantedBy=multi-user.target
 EOF
-
-        # Service 5: can-fis-writer
         cat <<EOF > /etc/systemd/system/can-fis-writer.service
 [Unit]
 Description=RNS-E FIS Display Writer
 After=can-handler.service
 Wants=can-handler.service
-
 [Service]
 ExecStart=/usr/bin/python3 ${REPO_DIR}/can_fis_writer.py
 WorkingDirectory=${REPO_DIR}
 Restart=always
 RestartSec=3
 User=pi
-
 [Install]
 WantedBy=multi-user.target
 EOF
     }
 
-    # Call the function defined above
     create_systemd_services
-    # =========================================================================
-    # END OF CORRECTED SECTION
-    # =========================================================================
     
     echo "--> Finalizing installation..."
     systemctl daemon-reload && systemctl enable "${SERVICES[@]}"
