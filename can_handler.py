@@ -34,7 +34,7 @@ ZMQ_PUB_SOCKET = None
 # --- Logging Setup ---
 def setup_logging():
     """Configures logging to file and stdout for systemd compatibility."""
-    log_file = '/var/log/can_handler.log'
+    log_file = '/var/log/rnse_control/can_handler.log'
     logging.basicConfig(
         level=logging.INFO,
         format='%(asctime)s [%(levelname)s] %(message)s',
