@@ -213,7 +213,9 @@ function install_all() {
     mkdir -p /tmp/.backlight /tmp/bluetooth /tmp/.local-pi /tmp/.config-pi /tmp/.cache-pi /tmp/.local-root /tmp/.config-root /tmp/.cache-root
     
     echo "--> Activating new fstab mounts..."
-    mount -a
+    mount /tmp
+    mount /var/log
+    mount /home/pi
     
     echo "--> Configuring /boot/config.txt..."
     # Remove old entries first to prevent duplication
