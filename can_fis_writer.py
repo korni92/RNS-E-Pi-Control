@@ -28,7 +28,7 @@ FEATURES = {}
 # --- Logging & Character Encoding Setup ---
 def setup_logging():
     """Configures logging to a dedicated file and to standard output."""
-    log_file = '/var/log/can_fis_writer.log'
+    log_file = '/var/log/rnse_control/can_fis_writer.log'
     logging.basicConfig(
         level=logging.INFO,
         format='%(asctime)s [%(levelname)s] %(message)s',
