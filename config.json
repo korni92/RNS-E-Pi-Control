@@ -1,7 +1,7 @@
 {
   "can_interface": "can0",
   "zmq": {
-    "publish_address": "ipc:///tmp/can_stream.ipc"
+    "publish_address": "ipc:///run/rnse_control/can_stream.ipc"
   },
   "can_ids": {
     "light_status": "0x635",
