@@ -170,7 +170,7 @@ function install_all() {
     mount -o remount,rw / && mount -o remount,rw /boot
 
     echo "--> Installing system packages..."
-    apt-get update && apt-get install -y git python3-pip can-utils python3-unidecode
+    apt-get update && apt-get install -y git python3-pip can-utils python3-unidecode python3-zmq
 
     echo "--> Cloning repository from ${REPO_URL}..."
     [ -d "$REPO_DIR" ] && rm -rf "$REPO_DIR"
