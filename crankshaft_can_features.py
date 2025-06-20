@@ -39,7 +39,7 @@ ZMQ_SUB_SOCKET = None
 # --- Logging Setup ---
 def setup_logging():
     """Configures logging to a dedicated file and to standard output."""
-    log_file = '/var/log/crankshaft_can_features.log'
+    log_file = '/var/log/rnse_control/crankshaft_can_features.log'
     logging.basicConfig(
         level=logging.INFO,
         format='%(asctime)s [%(levelname)s] %(message)s',
