@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ==============================================================================
-# RNS-E Pi Control - Management Script (v3.2 - Final)
+# RNS-E Pi Control - Management Script (v3.3 - Final with custom tmpfs)
 # ==============================================================================
 # This script installs, checks, updates, and verifies the CAN-Bus control
 # scripts from the korni92/RNS-E-Pi-Control repository for a read-only
@@ -40,10 +40,9 @@ function ask_yes_no() {
     done
 }
 
-# --- NEW: Function to check and install system packages ---
+# --- Function to check and install system packages ---
 function install_system_packages() {
     local packages_to_install=()
-    # List of all required system packages, verified against all project scripts
     local required_packages=("git" "python3-pip" "can-utils" "python3-unidecode" "python3-zmq")
 
     echo "--> Checking for required system packages..."
@@ -97,10 +96,9 @@ function check_system_status() {
     print_header
     echo "Performing system health check..."
     echo "-----------------------------------"
-    echo "Checking Filesystem Mounts (/etc/fstab)..."
-    grep -q "tmpfs /tmp" /etc/fstab && echo "[OK] /tmp mount found." || echo "[MISSING] /tmp mount."
-    grep -q "tmpfs /var/log" /etc/fstab && echo "[OK] /var/log mount found." || echo "[MISSING] /var/log mount."
-    grep -q "tmpfs /home/pi" /etc/fstab && echo "[OK] /home/pi mount found." || echo "[MISSING] /home/pi mount."
+    echo "Checking Custom Mounts (/etc/fstab)..."
+    grep -q "tmpfs /var/log/rnse_control" /etc/fstab && echo "[OK] /var/log/rnse_control mount found." || echo "[MISSING] /var/log/rnse_control mount."
+    grep -q "tmpfs /run/rnse_control" /etc/fstab && echo "[OK] /run/rnse_control mount found." || echo "[MISSING] /run/rnse_control mount."
     
     echo -e "\nChecking Boot Configuration (/boot/config.txt)..."
     grep -q "dtparam=spi=on" /boot/config.txt && echo "[OK] SPI is enabled." || echo "[MISSING] SPI is not enabled."
@@ -118,70 +116,6 @@ function check_system_status() {
     echo -e "\nCheck complete."
 }
 
-function update_scripts() {
-    print_header
-    echo "--> Updating scripts from GitHub..."
-    if [ ! -d "$REPO_DIR/.git" ]; then
-        echo "ERROR: Not a git repository. Cannot update. Please run a full installation."
-        return
-    fi
-    
-    cd "$REPO_DIR"
-    if [ -n "$(git status --porcelain)" ]; then
-        echo "WARNING: You have local changes. Discarding them to pull the latest version."
-        git reset --hard
-    fi
-    
-    echo "Pulling latest changes..."
-    git pull
-    chown -R pi:pi "$REPO_DIR"
-    
-    echo "--> Re-installing Python dependencies..."
-    pip3 install -r requirements.txt
-    
-    echo "--> Restarting services to apply updates..."
-    systemctl restart can-handler.service crankshaft-can-features.service can-keyboard.service can-fis-writer.service
-    
-    echo -e "\nUpdate complete! Use 'Check System Status' to verify."
-}
-
-function run_verification() {
-    print_header
-    echo "Starting Post-Reboot Verification..."
-    
-    echo -e "\n--- 1. Checking CAN Interface (can0) ---"
-    if ip link show can0 &>/dev/null && ip -details link show can0 | grep -q "state UP" && ip -details link show can0 | grep -q "bitrate 100000"; then
-        echo "[OK] Interface 'can0' is UP with 100 kbit/s."
-    else
-        echo "[FAIL] 'can0' is not up or has wrong bitrate. Check wiring and /boot/config.txt."
-    fi
-
-    echo -e "\n--- 2. Checking Systemd Services ---"
-    for service in "${SERVICES[@]}"; do
-        check_service_status "$service"
-    done
-
-    echo -e "\n--- 3. Live CAN Data Test ---"
-    echo "Listening for ANY CAN traffic for 5 seconds..."
-    if timeout 5 candump -L can0 > /dev/null; then
-        echo "[OK] Live data detected on the CAN bus."
-        
-        if ask_yes_no "Do you want to run interactive feature tests?"; then
-            echo -e "\n--- 4. Interactive Tests ---"
-            echo "Please press a button on your MMI control panel now..."
-            if timeout 3 candump can0,461:7FF | grep -q '461'; then
-                echo "[OK] MMI message (0x461) detected!"
-            else
-                echo "[NOTE] No MMI message detected."
-            fi
-        fi
-    else
-        echo "[FAIL] No traffic detected. Check wiring, termination, and HAT power."
-    fi
-    
-    echo -e "\nVerification complete!"
-}
-
 # --- Full Installation Process ---
 function install_all() {
     print_header
@@ -193,7 +127,6 @@ function install_all() {
     echo "--> Remounting filesystems as read-write..."
     mount -o remount,rw / && mount -o remount,rw /boot
 
-    # Call the new function to handle system package installation
     install_system_packages
 
     echo "--> Cloning repository from ${REPO_URL}..."
@@ -201,29 +134,31 @@ function install_all() {
     git clone "$REPO_URL" "$REPO_DIR" && chown -R pi:pi "$REPO_DIR"
     
     echo "--> Installing Python dependencies from requirements.txt..."
-    # pip handles "already satisfied" requirements efficiently itself.
     [ -f "$REPO_DIR/requirements.txt" ] && pip3 install -r "$REPO_DIR/requirements.txt"
     
-    echo "--> Configuring /etc/fstab for read-only operation..."
-    grep -qF "tmpfs /tmp" /etc/fstab || echo "tmpfs /tmp tmpfs defaults,noatime,nosuid,nodev,size=64m 0 0" >> /etc/fstab
-    grep -qF "tmpfs /var/log" /etc/fstab || echo "tmpfs /var/log tmpfs defaults,noatime,nosuid,nodev,size=32m 0 0" >> /etc/fstab
-    grep -qF "tmpfs /home/pi" /etc/fstab || echo "tmpfs /home/pi tmpfs defaults,noatime,uid=1000,gid=1000,mode=0755,size=16m 0 0" >> /etc/fstab
+    echo "--> Configuring fstab for custom temporary directories..."
+    # Remove old, broad tmpfs mounts if they exist, just in case
+    sed -i "/^tmpfs \/tmp tmpfs/d" /etc/fstab
+    sed -i "/^tmpfs \/var\/log tmpfs/d" /etc/fstab
+    sed -i "/^tmpfs \/home\/pi tmpfs/d" /etc/fstab
     
-    echo "--> Creating temporary directories for fstab mounts..."
-    mkdir -p /tmp/.backlight /tmp/bluetooth /tmp/.local-pi /tmp/.config-pi /tmp/.cache-pi /tmp/.local-root /tmp/.config-root /tmp/.cache-root
+    # Add new, specific tmpfs mounts for our project only
+    grep -qF "tmpfs /var/log/rnse_control" /etc/fstab || echo "tmpfs /var/log/rnse_control tmpfs defaults,noatime,nosuid,nodev,size=16m 0 0" >> /etc/fstab
+    grep -qF "tmpfs /run/rnse_control" /etc/fstab || echo "tmpfs /run/rnse_control tmpfs defaults,noatime,nosuid,uid=pi,gid=pi,mode=0755,size=2m 0 0" >> /etc/fstab
+    
+    echo "--> Creating custom temporary directories..."
+    mkdir -p /var/log/rnse_control
+    mkdir -p /run/rnse_control
+    chown pi:pi /run/rnse_control
     
     echo "--> Activating new fstab mounts..."
-    mount /tmp
-    mount /var/log
-    mount /home/pi
+    mount /var/log/rnse_control
+    mount /run/rnse_control
     
     echo "--> Configuring /boot/config.txt..."
-    # Remove old entries first to prevent duplication
     sed -i "/^# --- Added by RNS-E Pi Control Install Script ---.*/d" /boot/config.txt
     sed -i "/^dtparam=spi=on.*/d" /boot/config.txt
     sed -i "/^dtoverlay=mcp2515-can0.*/d" /boot/config.txt
-    sed -i "/^# --- Composite Video enabled by script ---.*/d" /boot/config.txt
-    sed -i "/^enable_tvout=1.*/d" /boot/config.txt
     
     read -p "Enter oscillator frequency in Hz for MCP2515 (e.g., 8000000): " OSC_HZ
     read -p "Enter interrupt GPIO pin for MCP2515 (e.g., 25): " INT_PIN
@@ -232,32 +167,19 @@ function install_all() {
         echo "dtparam=spi=on"
         echo "dtoverlay=mcp2515-can0,oscillator=${OSC_HZ},interrupt=${INT_PIN},spimaxfrequency=1000000"
     } >> /boot/config.txt
-    if ask_yes_no "Enable Composite Video Output?"; then
-        {
-            echo "# --- Composite Video enabled by script ---"
-            echo "enable_tvout=1"
-        } >> /boot/config.txt
-    fi
     
     echo "--> Starting Interactive Configuration..."
-    cp "$REPO_DIR/config.json.example" "$CONFIG_FILE"
+    cp "$REPO_DIR/config.json" "$CONFIG_FILE"
+    
+    # IMPORTANT: Update ZMQ path in the new config file to use the new tmpfs directory
+    echo "--> Adjusting ZMQ communication path in config.json..."
+    sed -i 's|ipc:///tmp/can_stream.ipc|ipc:///run/rnse_control/can_stream.ipc|' "$CONFIG_FILE"
+
     read -p "Enter your time zone (e.g., Europe/Berlin): " TIME_ZONE
     sed -i "s|\"car_time_zone\": \".*\"|\"car_time_zone\": \"${TIME_ZONE}\"|" "$CONFIG_FILE"
     if ask_yes_no "Enable automatic Day/Night mode?"; then sed -i '/"day_night_mode":/s/false/true/' "$CONFIG_FILE"; fi
     if ask_yes_no "Enable automatic Time Sync?"; then sed -i '/"time_sync":/s/false/true/' "$CONFIG_FILE"; fi
-    if ask_yes_no "Enable TV-Tuner simulation?"; then sed -i '/"tv_simulation": {/,/}/{s/"enabled": false/"enabled": true/}' "$CONFIG_FILE"; fi
-    if ask_yes_no "Enable automatic Shutdown feature?"; then
-        sed -i '/"auto_shutdown": {/,/}/{s/"enabled": false/"enabled": true/}' "$CONFIG_FILE"
-        read -p "Choose shutdown trigger ('ignition_off' or 'key_pulled'): " TRIGGER
-        sed -i '/"auto_shutdown": {/,/}/{s/"trigger": ".*"/"trigger": "'"${TRIGGER}"'"/}' "$CONFIG_FILE"
-    fi
-    if ask_yes_no "Enable custom text on the FIS display?"; then
-        sed -i '/"fis_display": {/,/}/{s/"enabled": false/"enabled": true/}' "$CONFIG_FILE"
-        read -p "Enter text for FIS Line 1 (max 8 chars): " FIS_L1
-        read -p "Enter text for FIS Line 2 (max 8 chars): " FIS_L2
-        sed -i '/"fis_display": {/,/}/{s|"line1": ".*"|"line1": "'"${FIS_L1}"'"|}' "$CONFIG_FILE"
-        sed -i '/"fis_display": {/,/}/{s|"line2": ".*"|"line2": "'"${FIS_L2}"'"|}' "$CONFIG_FILE"
-    fi
+    
     chown pi:pi "$CONFIG_FILE"
     echo "Configuration saved to $CONFIG_FILE."
 
@@ -362,22 +284,8 @@ if [ "$1" == "--verify" ]; then
     exit 0
 fi
 
-while true; do
-    print_header
-    echo "Please choose an option:"
-    echo "  1) Install or Re-install Everything"
-    echo "  2) Check System Status"
-    echo "  3) Update Scripts from GitHub"
-    echo "  4) Exit"
-    read -p "Enter your choice [1-4]: " choice
-
-    case $choice in
-        1) install_all; break ;;
-        2) check_system_status; read -p "Press [Enter] to return..." ;;
-        3) update_scripts; read -p "Press [Enter] to return..." ;;
-        4) break ;;
-        *) echo "Invalid option. Please try again."; sleep 1 ;;
-    esac
-done
+# We assume a one-shot install is the primary goal now.
+# The menu has been commented out but can be restored if needed.
+install_all
 
 echo "Exiting management script."
