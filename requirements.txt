@@ -1,5 +1,5 @@
 python-can
 pyserial
-pynput
+python-uinput
 pytz
 unidecode
