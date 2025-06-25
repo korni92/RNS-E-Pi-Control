@@ -45,9 +45,9 @@
     "crankshaft_daynight_script": "/opt/crankshaft/service_daynight.sh"
   },
   "thresholds": {
-    "cooldown_period": 0.3,
-    "long_press_duration": 2.0,
-    "extended_long_press_duration": 9.0,
+    "cooldown_period": 0.2,
+    "long_press_message_count": 5,
+    "extended_long_press_message_count": 30,
     "shutdown_delay_ignition_off_seconds": 5,
     "time_sync_threshold_minutes": 1.0
   },
