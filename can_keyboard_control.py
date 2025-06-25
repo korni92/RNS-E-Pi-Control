@@ -185,7 +185,7 @@ def press_key(key):
     """Simulates a single key press and release using the uinput device."""
     if not key or not UINPUT_DEVICE: return
     try:
-        logger.info(f"Simulating key press: {key.name}") # .name gives "KEY_ENTER" string
+        logger.info(f"Simulating key press: {key}") # Log the key tuple directly
         UINPUT_DEVICE.emit_click(key)
     except Exception as e:
         logger.error(f"Failed to simulate key '{key}': {e}")
