@@ -168,35 +168,43 @@ def run_command(command_str):
     except Exception as e:
         logger.error(f"Failed to execute command '{command_str}': {e}")
 
-# --- FINAL REFACTORED MMI HANDLER ---
+
+# --- FINAL MMI HANDLER (Corrected Logic) ---
 def handle_mmi_message(msg, state):
     if msg['dlc'] < 5: return
     data = bytes.fromhex(msg['data_hex'])
     status, cmd = data[2], (data[3], data[4])
     now = time.time()
 
-    # Cooldown Check: Ignore rapid messages for the same command if an action was just fired.
-    if state.last_mmi_action_info['command'] == cmd and now - state.last_mmi_action_info['time'] < CONFIG['cooldown']:
-        return
-
-    # --- Key Press / Hold Event ---
+    # --- Key Press / Hold Event (status=01) ---
     if status == 0x01:
+        # Check if this is a new physical press action.
+        # A new action starts if the counter for this command doesn't exist yet.
+        if cmd not in state.mmi_press_counters:
+            # This is the beginning of a new press, reset all states for this command.
+            state.reset_mmi_state(cmd)
+            # Apply a cooldown to prevent bouncing after a previous action on the same button.
+            if now - state.last_mmi_action_info.get('time', 0) < CONFIG['cooldown']:
+                return # Still in cooldown from the last action, ignore this new press.
+
+        # Increment press counter
         current_count = state.mmi_press_counters.get(cmd, 0) + 1
         state.mmi_press_counters[cmd] = current_count
 
-        # Scroll commands are handled immediately (but with the cooldown check from above)
+        # Scroll commands are special: they fire immediately on every press message
         if cmd in CONFIG['mmi_scroll_cmds']:
             press_key(CONFIG['mmi_short_map'].get(cmd))
-            state.last_mmi_action_info = {'command': cmd, 'time': now}
+            # Reset the counter to prevent it from ever triggering a long press
+            state.mmi_press_counters[cmd] = 0
             return
 
-        # Check for extended press
+        # Check for extended press (system actions)
         if FEATURES.get('system_actions') and not state.mmi_extended_action_fired.get(cmd) and current_count >= CONFIG['extended_press_count']:
             action = CONFIG['mmi_extended_map'].get(cmd)
             logger.info(f"MMI Extended Press: {cmd}")
             run_command(action)
             state.mmi_extended_action_fired[cmd] = True
-            state.mmi_long_action_fired[cmd] = True
+            state.mmi_long_action_fired[cmd] = True # Also flag as a long press to prevent other actions
             state.last_mmi_action_info = {'command': cmd, 'time': now}
         
         # Check for normal long press
@@ -207,17 +215,21 @@ def handle_mmi_message(msg, state):
             state.mmi_long_action_fired[cmd] = True
             state.last_mmi_action_info = {'command': cmd, 'time': now}
 
-    # --- Key Release Event ---
+    # --- Key Release Event (status=04) ---
     elif status == 0x04:
-        # On release, only fire a short press if no long/extended action has occurred
-        if not state.mmi_long_action_fired.get(cmd) and cmd not in CONFIG['mmi_scroll_cmds']:
-            key = CONFIG['mmi_short_map'].get(cmd)
-            logger.info(f"MMI Short Press: {cmd}")
-            press_key(key)
-            state.last_mmi_action_info = {'command': cmd, 'time': now}
+        # A release event can only trigger a short press if the counter exists
+        # (i.e., a press was detected) and no long press has been fired for it.
+        if cmd in state.mmi_press_counters and not state.mmi_long_action_fired.get(cmd):
+            if cmd not in CONFIG['mmi_scroll_cmds']:
+                key = CONFIG['mmi_short_map'].get(cmd)
+                logger.info(f"MMI Short Press: {cmd}")
+                press_key(key)
+                state.last_mmi_action_info = {'command': cmd, 'time': now}
 
-        # Always reset the state for the command on release
-        state.reset_mmi_state(cmd)
+        # After a release, the action is over. We remove the command from the counter dict.
+        # This signifies that the button is no longer being pressed.
+        # The next status=0x01 message for this command will then trigger a full state reset.
+        state.mmi_press_counters.pop(cmd, None)
 
 def handle_mfsw_message(msg, state):
     if msg['dlc'] < 2: return
