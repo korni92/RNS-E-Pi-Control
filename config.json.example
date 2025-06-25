@@ -1,7 +1,7 @@
 {
   "can_interface": "can0",
   "zmq": {
-    "publish_address": "ipc:///tmp/can_stream.ipc"
+    "publish_address": "ipc:///run/rnse_control/can_stream.ipc"
   },
   "can_ids": {
     "light_status": "0x635",
@@ -54,25 +54,25 @@
   "mmi_scroll_commands": ["0,32", "0,64"],
   "key_mappings": {
     "mmi_short": {
-      "1,0": "v",
-      "2,0": "n",
-      "64,0": "Key.up",
-      "128,0": "Key.down",
-      "0,16": "Key.enter",
-      "0,32": "2",
-      "0,64": "1",
-      "0,2": "Key.esc",
-      "0,1": "h"
+      "1,0": "KEY_V",
+      "2,0": "KEY_N",
+      "64,0": "KEY_UP",
+      "128,0": "KEY_DOWN",
+      "0,16": "KEY_ENTER",
+      "0,32": "KEY_2",
+      "0,64": "KEY_1",
+      "0,2": "KEY_ESC",
+      "0,1": "KEY_H"
     },
     "mmi_long": {
       "1,0": null,
       "2,0": null,
       "64,0": null,
-      "128,0": "m",
+      "128,0": "KEY_M",
       "0,16": null,
       "0,32": null,
       "0,64": null,
-      "0,2": "0",
+      "0,2": "KEY_0",
       "0,1": null
     },
     "mmi_extended": {
@@ -93,15 +93,15 @@
       "release": ["0x00", "0x00"]
     },
     "mfsw": {
-      "scroll_up": "Key.media_volume_up",
-      "scroll_down": "Key.media_volume_down",
-      "mode_short": "Key.enter",
-      "mode_long": "Key.media_next"
+      "scroll_up": "KEY_VOLUMEUP",
+      "scroll_down": "KEY_VOLUMEDOWN",
+      "mode_short": "KEY_ENTER",
+      "mode_long": "KEY_NEXTSONG"
     }
   },
   "source_data": {
     "tv_mode": ["0x37"],
-    "play_key": "x",
-    "pause_key": "c"
+    "play_key": "KEY_X",
+    "pause_key": "KEY_C"
   }
 }
