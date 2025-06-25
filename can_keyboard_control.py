@@ -4,10 +4,10 @@
 #
 # Listens for specific CAN bus messages published by can_handler.py via ZeroMQ
 # to translate car controls (MMI, MFSW) into keyboard presses and system commands.
-# It also handles media state changes (e.g., play/pause on source switch).
 #
 # This script is designed to run as a systemd service and uses python-uinput.
 # It uses a message counter logic and a global cooldown for robust press detection.
+# Version: Final/Robust
 #
 
 import zmq
@@ -18,6 +18,7 @@ import logging
 import signal
 import sys
 import uinput
+import os
 
 # --- Global State ---
 RUNNING = True
@@ -40,24 +41,17 @@ logger = setup_logging()
 
 # --- State Management Class ---
 class ControlState:
-    """Holds the runtime state for MMI, MFSW, and media controls using message counters."""
     def __init__(self):
-        # MMI state using counters
         self.mmi_press_counters = {}
         self.mmi_long_action_fired = {}
         self.mmi_extended_action_fired = {}
-        self.last_mmi_action_info = {'command': None, 'time': 0} # Universal MMI cooldown
-
-        # MFSW state for mode button using counters
+        self.last_mmi_action_info = {'command': None, 'time': 0}
         self.mfsw_mode_press_count = 0
         self.mfsw_mode_long_action_fired = False
-
-        # Media source state
         self.is_pi_source_active = None
         self.last_status_log_time = time.time()
 
     def reset_mmi_state(self, mmi_command):
-        """Resets counter and flags for a specific MMI command tuple."""
         self.mmi_press_counters.pop(mmi_command, None)
         self.mmi_long_action_fired.pop(mmi_command, None)
         self.mmi_extended_action_fired.pop(mmi_command, None)
@@ -141,15 +135,31 @@ def get_all_possible_keys():
     return list(keys)
 
 def initialize_uinput_device():
+    """Creates the virtual keyboard device, waiting for /dev/uinput if necessary."""
+    uinput_path = "/dev/uinput"
+    for _ in range(10): # Wait for the device to appear, max 10 seconds
+        if os.path.exists(uinput_path):
+            logger.info(f"'{uinput_path}' found.")
+            break
+        logger.warning(f"Waiting for '{uinput_path}' to become available...")
+        time.sleep(1)
+    else:
+        logger.critical(f"FATAL: Device '{uinput_path}' not found after waiting.")
+        return None
+
     try:
         events = get_all_possible_keys()
         if not events:
             logger.warning("No keys mapped. Keyboard device not created.")
             return None
-        return uinput.Device(events, name="can-virtual-keyboard")
+        
+        logger.info("Creating virtual keyboard device...")
+        device = uinput.Device(events, name="can-virtual-keyboard")
+        logger.info("Virtual keyboard device created successfully.")
+        return device
     except Exception as e:
         logger.critical(f"FATAL: Could not initialize uinput keyboard device: {e}", exc_info=True)
-        logger.critical("This may be due to missing permissions for /dev/uinput.")
+        logger.critical("This may be due to missing permissions. Check user/group and udev rules.")
         return None
 
 def press_key(key):
@@ -168,46 +178,35 @@ def run_command(command_str):
     except Exception as e:
         logger.error(f"Failed to execute command '{command_str}': {e}")
 
-
-# --- FINAL MMI HANDLER (Corrected Logic) ---
+# --- MMI Handler with Corrected Counter/Cooldown Logic ---
 def handle_mmi_message(msg, state):
     if msg['dlc'] < 5: return
     data = bytes.fromhex(msg['data_hex'])
     status, cmd = data[2], (data[3], data[4])
     now = time.time()
 
-    # --- Key Press / Hold Event (status=01) ---
-    if status == 0x01:
-        # Check if this is a new physical press action.
-        # A new action starts if the counter for this command doesn't exist yet.
-        if cmd not in state.mmi_press_counters:
-            # This is the beginning of a new press, reset all states for this command.
+    if status == 0x01: # Press Event
+        if cmd not in state.mmi_press_counters: # New physical press
             state.reset_mmi_state(cmd)
-            # Apply a cooldown to prevent bouncing after a previous action on the same button.
             if now - state.last_mmi_action_info.get('time', 0) < CONFIG['cooldown']:
-                return # Still in cooldown from the last action, ignore this new press.
-
-        # Increment press counter
+                return # In cooldown, ignore new press
+        
         current_count = state.mmi_press_counters.get(cmd, 0) + 1
         state.mmi_press_counters[cmd] = current_count
 
-        # Scroll commands are special: they fire immediately on every press message
         if cmd in CONFIG['mmi_scroll_cmds']:
             press_key(CONFIG['mmi_short_map'].get(cmd))
-            # Reset the counter to prevent it from ever triggering a long press
             state.mmi_press_counters[cmd] = 0
             return
 
-        # Check for extended press (system actions)
         if FEATURES.get('system_actions') and not state.mmi_extended_action_fired.get(cmd) and current_count >= CONFIG['extended_press_count']:
             action = CONFIG['mmi_extended_map'].get(cmd)
             logger.info(f"MMI Extended Press: {cmd}")
             run_command(action)
             state.mmi_extended_action_fired[cmd] = True
-            state.mmi_long_action_fired[cmd] = True # Also flag as a long press to prevent other actions
+            state.mmi_long_action_fired[cmd] = True
             state.last_mmi_action_info = {'command': cmd, 'time': now}
         
-        # Check for normal long press
         elif not state.mmi_long_action_fired.get(cmd) and current_count >= CONFIG['long_press_count']:
             key = CONFIG['mmi_long_map'].get(cmd)
             logger.info(f"MMI Long Press: {cmd}")
@@ -215,52 +214,38 @@ def handle_mmi_message(msg, state):
             state.mmi_long_action_fired[cmd] = True
             state.last_mmi_action_info = {'command': cmd, 'time': now}
 
-    # --- Key Release Event (status=04) ---
-    elif status == 0x04:
-        # A release event can only trigger a short press if the counter exists
-        # (i.e., a press was detected) and no long press has been fired for it.
+    elif status == 0x04: # Release Event
         if cmd in state.mmi_press_counters and not state.mmi_long_action_fired.get(cmd):
             if cmd not in CONFIG['mmi_scroll_cmds']:
                 key = CONFIG['mmi_short_map'].get(cmd)
                 logger.info(f"MMI Short Press: {cmd}")
                 press_key(key)
                 state.last_mmi_action_info = {'command': cmd, 'time': now}
-
-        # After a release, the action is over. We remove the command from the counter dict.
-        # This signifies that the button is no longer being pressed.
-        # The next status=0x01 message for this command will then trigger a full state reset.
+        
         state.mmi_press_counters.pop(cmd, None)
 
 def handle_mfsw_message(msg, state):
     if msg['dlc'] < 2: return
     cmd_byte = int(msg['data_hex'][2:4], 16)
-
-    # Scroll buttons are simple, no complex state needed
-    if cmd_byte == CONFIG['mfsw_cmds']['scroll_up']:
-        press_key(CONFIG['mfsw_map']['scroll_up'])
-    elif cmd_byte == CONFIG['mfsw_cmds']['scroll_down']:
-        press_key(CONFIG['mfsw_map']['scroll_down'])
-
-    # State machine for the 'mode' button
+    if cmd_byte == CONFIG['mfsw_cmds']['scroll_up']: press_key(CONFIG['mfsw_map'].get('scroll_up'))
+    elif cmd_byte == CONFIG['mfsw_cmds']['scroll_down']: press_key(CONFIG['mfsw_map'].get('scroll_down'))
     elif cmd_byte == CONFIG['mfsw_cmds']['mode_press']:
         state.mfsw_mode_press_count += 1
         if not state.mfsw_mode_long_action_fired and state.mfsw_mode_press_count >= CONFIG['long_press_count']:
             logger.info("MFSW Mode Long Press")
-            press_key(CONFIG['mfsw_map']['mode_long'])
+            press_key(CONFIG['mfsw_map'].get('mode_long'))
             state.mfsw_mode_long_action_fired = True
-
     elif cmd_byte in CONFIG['mfsw_release_cmds']:
         if not state.mfsw_mode_long_action_fired and state.mfsw_mode_press_count > 0:
             logger.info("MFSW Mode Short Press")
-            press_key(CONFIG['mfsw_map']['mode_short'])
-        
+            press_key(CONFIG['mfsw_map'].get('mode_short'))
         state.mfsw_mode_press_count = 0
         state.mfsw_mode_long_action_fired = False
 
 def handle_source_message(msg, state):
     if msg['dlc'] < 8: return
     data = bytes.fromhex(msg['data_hex'])
-    is_pi_active = any(data.startswith(sig) for sig in CONFIG['tv_mode_bytes'])
+    is_pi_active = any(data.startswith(sig) for sig in CONFIG.get('tv_mode_bytes', []))
     if is_pi_active != state.is_pi_source_active:
         state.is_pi_source_active = is_pi_active
         key_to_press = CONFIG['play_key'] if is_pi_active else CONFIG['pause_key']
@@ -280,36 +265,47 @@ def shutdown_handler(signum, frame):
         RUNNING = False
 
 def main():
-    global UINPUT_DEVICE
+    global UINPUT_DEVICE, RUNNING
+
     logger.info("Starting can_keyboard_control.py service...")
     if not load_and_initialize_config(): sys.exit(1)
-    with initialize_uinput_device() as uinput_dev:
-        if not uinput_dev: sys.exit(1)
-        UINPUT_DEVICE = uinput_dev
-        setup_signal_handlers()
-        state = ControlState()
-        if not initialize_zmq_subscriber(): sys.exit(1)
-        logger.info("--- Service is running ---")
-        while RUNNING:
-            try:
+    
+    uinput_dev = initialize_uinput_device()
+    if not uinput_dev:
+        sys.exit(1)
+    UINPUT_DEVICE = uinput_dev
+    
+    setup_signal_handlers()
+    state = ControlState()
+    if not initialize_zmq_subscriber():
+        UINPUT_DEVICE.destroy()
+        sys.exit(1)
+        
+    logger.info("--- Service is running ---")
+    while RUNNING:
+        try:
+            if ZMQ_SUB_SOCKET.poll(timeout=1000):
                 _, msg_bytes = ZMQ_SUB_SOCKET.recv_multipart()
                 msg_dict = json.loads(msg_bytes.decode('utf-8'))
                 can_id = msg_dict.get('arbitration_id')
-                if FEATURES.get('mmi_controls') and can_id == CONFIG['can_ids']['mmi']: handle_mmi_message(msg_dict, state)
-                elif FEATURES.get('mfsw_controls') and can_id == CONFIG['can_ids']['mfsw']: handle_mfsw_message(msg_dict, state)
-                elif FEATURES.get('media_control') and can_id == CONFIG['can_ids']['source']: handle_source_message(msg_dict, state)
-            except zmq.error.Again:
-                if time.time() - state.last_status_log_time > 60: state.log_periodic_status()
-            except (zmq.ZMQError, json.JSONDecodeError, UnicodeDecodeError) as e:
-                logger.warning(f"A recoverable error occurred: {e}. Reconnecting...")
-                if ZMQ_SUB_SOCKET and not ZMQ_SUB_SOCKET.closed: ZMQ_SUB_SOCKET.close()
-                initialize_zmq_subscriber()
-                time.sleep(5)
-            except Exception:
-                logger.critical("An unexpected critical error in main loop.", exc_info=True)
-                break
+                if FEATURES.get('mmi_controls') and can_id == CONFIG['can_ids'].get('mmi'): handle_mmi_message(msg_dict, state)
+                elif FEATURES.get('mfsw_controls') and can_id == CONFIG['can_ids'].get('mfsw'): handle_mfsw_message(msg_dict, state)
+                elif FEATURES.get('media_control') and can_id == CONFIG['can_ids'].get('source'): handle_source_message(msg_dict, state)
+            
+            if time.time() - state.last_status_log_time > 60:
+                state.log_periodic_status()
+
+        except (zmq.ZMQError, json.JSONDecodeError, UnicodeDecodeError) as e:
+            logger.warning(f"A recoverable error occurred: {e}. Reconnecting...")
+            if ZMQ_SUB_SOCKET and not ZMQ_SUB_SOCKET.closed: ZMQ_SUB_SOCKET.close()
+            initialize_zmq_subscriber()
+            time.sleep(5)
+        except Exception:
+            logger.critical("An unexpected critical error in main loop.", exc_info=True)
+            RUNNING = False
 
     logger.info("Main loop terminated. Closing resources.")
+    if UINPUT_DEVICE: UINPUT_DEVICE.destroy()
     if ZMQ_SUB_SOCKET and not ZMQ_SUB_SOCKET.closed: ZMQ_SUB_SOCKET.close()
     if ZMQ_CONTEXT and not ZMQ_CONTEXT.closed: ZMQ_CONTEXT.term()
     logger.info("can_keyboard_control.py has finished.")
