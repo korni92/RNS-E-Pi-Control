@@ -7,7 +7,7 @@
 # It also handles media state changes (e.g., play/pause on source switch).
 #
 # This script is designed to run as a systemd service and uses python-uinput.
-# It uses a message counter logic for robust short/long press detection.
+# It uses a message counter logic and a global cooldown for robust press detection.
 #
 
 import zmq
@@ -38,15 +38,15 @@ def setup_logging():
 
 logger = setup_logging()
 
-# --- REFACTORED: State Management Class with Counter Logic ---
+# --- State Management Class ---
 class ControlState:
     """Holds the runtime state for MMI, MFSW, and media controls using message counters."""
     def __init__(self):
         # MMI state using counters
-        self.mmi_press_counters = {}         # { (byte3, byte4): count }
-        self.mmi_long_action_fired = {}      # { (byte3, byte4): bool }
-        self.mmi_extended_action_fired = {}  # { (byte3, byte4): bool }
-        self.last_mmi_scroll_time = 0
+        self.mmi_press_counters = {}
+        self.mmi_long_action_fired = {}
+        self.mmi_extended_action_fired = {}
+        self.last_mmi_action_info = {'command': None, 'time': 0} # Universal MMI cooldown
 
         # MFSW state for mode button using counters
         self.mfsw_mode_press_count = 0
@@ -57,13 +57,12 @@ class ControlState:
         self.last_status_log_time = time.time()
 
     def reset_mmi_state(self, mmi_command):
-        """Resets all states for a specific MMI command tuple."""
+        """Resets counter and flags for a specific MMI command tuple."""
         self.mmi_press_counters.pop(mmi_command, None)
         self.mmi_long_action_fired.pop(mmi_command, None)
         self.mmi_extended_action_fired.pop(mmi_command, None)
 
     def log_periodic_status(self):
-        """Logs the current operational status."""
         active_source = 'Unknown'
         if self.is_pi_source_active is True: active_source = 'Active (Pi)'
         elif self.is_pi_source_active is False: active_source = 'Inactive (Other)'
@@ -104,7 +103,7 @@ def load_and_initialize_config(config_path='/home/pi/config.json'):
             'pause_key': parse_key(cfg['source_data']['pause_key']),
             'cooldown': thresholds['cooldown_period'],
             'long_press_count': thresholds['long_press_message_count'],
-            'extended_press_count': thresholds.get('extended_long_press_message_count', 30), # Default to 30 if not in config
+            'extended_press_count': thresholds.get('extended_long_press_message_count', 30),
         }
         logger.info("Configuration loaded and processed successfully.")
         return True
@@ -169,86 +168,84 @@ def run_command(command_str):
     except Exception as e:
         logger.error(f"Failed to execute command '{command_str}': {e}")
 
-# --- REFACTORED: CAN Message Handlers with Counter Logic ---
-
+# --- FINAL REFACTORED MMI HANDLER ---
 def handle_mmi_message(msg, state):
-    """Handles MMI inputs using a message counter for short/long/extended presses."""
     if msg['dlc'] < 5: return
     data = bytes.fromhex(msg['data_hex'])
     status, cmd = data[2], (data[3], data[4])
     now = time.time()
 
+    # Cooldown Check: Ignore rapid messages for the same command if an action was just fired.
+    if state.last_mmi_action_info['command'] == cmd and now - state.last_mmi_action_info['time'] < CONFIG['cooldown']:
+        return
+
     # --- Key Press / Hold Event ---
     if status == 0x01:
-        # Increment press counter
         current_count = state.mmi_press_counters.get(cmd, 0) + 1
         state.mmi_press_counters[cmd] = current_count
 
-        # Handle scroll wheels immediately but with a cooldown
+        # Scroll commands are handled immediately (but with the cooldown check from above)
         if cmd in CONFIG['mmi_scroll_cmds']:
-            if now - state.last_mmi_scroll_time > CONFIG['cooldown']:
-                press_key(CONFIG['mmi_short_map'].get(cmd))
-                state.last_mmi_scroll_time = now
-            return # Don't process scroll commands any further
+            press_key(CONFIG['mmi_short_map'].get(cmd))
+            state.last_mmi_action_info = {'command': cmd, 'time': now}
+            return
 
-        # Check for extended press (system actions)
-        if FEATURES.get('system_actions') and not state.mmi_extended_action_fired.get(cmd):
-            if current_count >= CONFIG['extended_press_count']:
-                action = CONFIG['mmi_extended_map'].get(cmd)
-                logger.info(f"MMI Extended Press detected for {cmd}. Action: {action}")
-                run_command(action)
-                state.mmi_extended_action_fired[cmd] = True
-                state.mmi_long_action_fired[cmd] = True # Prevent normal long press
+        # Check for extended press
+        if FEATURES.get('system_actions') and not state.mmi_extended_action_fired.get(cmd) and current_count >= CONFIG['extended_press_count']:
+            action = CONFIG['mmi_extended_map'].get(cmd)
+            logger.info(f"MMI Extended Press: {cmd}")
+            run_command(action)
+            state.mmi_extended_action_fired[cmd] = True
+            state.mmi_long_action_fired[cmd] = True
+            state.last_mmi_action_info = {'command': cmd, 'time': now}
         
         # Check for normal long press
-        if not state.mmi_long_action_fired.get(cmd):
-            if current_count >= CONFIG['long_press_count']:
-                key = CONFIG['mmi_long_map'].get(cmd)
-                logger.info(f"MMI Long Press detected for {cmd}.")
-                press_key(key)
-                state.mmi_long_action_fired[cmd] = True
+        elif not state.mmi_long_action_fired.get(cmd) and current_count >= CONFIG['long_press_count']:
+            key = CONFIG['mmi_long_map'].get(cmd)
+            logger.info(f"MMI Long Press: {cmd}")
+            press_key(key)
+            state.mmi_long_action_fired[cmd] = True
+            state.last_mmi_action_info = {'command': cmd, 'time': now}
 
     # --- Key Release Event ---
     elif status == 0x04:
-        # Check for short press on release if no long/extended action was fired
+        # On release, only fire a short press if no long/extended action has occurred
         if not state.mmi_long_action_fired.get(cmd) and cmd not in CONFIG['mmi_scroll_cmds']:
             key = CONFIG['mmi_short_map'].get(cmd)
-            logger.info(f"MMI Short Press detected for {cmd}.")
+            logger.info(f"MMI Short Press: {cmd}")
             press_key(key)
-        
-        # Reset all states for this command
+            state.last_mmi_action_info = {'command': cmd, 'time': now}
+
+        # Always reset the state for the command on release
         state.reset_mmi_state(cmd)
 
 def handle_mfsw_message(msg, state):
-    """Handles MFSW inputs using message counters."""
     if msg['dlc'] < 2: return
     cmd_byte = int(msg['data_hex'][2:4], 16)
 
-    # Handle scroll buttons immediately
+    # Scroll buttons are simple, no complex state needed
     if cmd_byte == CONFIG['mfsw_cmds']['scroll_up']:
         press_key(CONFIG['mfsw_map']['scroll_up'])
     elif cmd_byte == CONFIG['mfsw_cmds']['scroll_down']:
         press_key(CONFIG['mfsw_map']['scroll_down'])
 
-    # Handle press/hold/release for the 'mode' button
+    # State machine for the 'mode' button
     elif cmd_byte == CONFIG['mfsw_cmds']['mode_press']:
         state.mfsw_mode_press_count += 1
         if not state.mfsw_mode_long_action_fired and state.mfsw_mode_press_count >= CONFIG['long_press_count']:
-            logger.info("MFSW mode long press detected.")
+            logger.info("MFSW Mode Long Press")
             press_key(CONFIG['mfsw_map']['mode_long'])
             state.mfsw_mode_long_action_fired = True
 
     elif cmd_byte in CONFIG['mfsw_release_cmds']:
         if not state.mfsw_mode_long_action_fired and state.mfsw_mode_press_count > 0:
-            logger.info("MFSW mode short press detected.")
+            logger.info("MFSW Mode Short Press")
             press_key(CONFIG['mfsw_map']['mode_short'])
         
-        # Reset state on release
         state.mfsw_mode_press_count = 0
         state.mfsw_mode_long_action_fired = False
 
 def handle_source_message(msg, state):
-    """Handles media source changes to auto-play/pause."""
     if msg['dlc'] < 8: return
     data = bytes.fromhex(msg['data_hex'])
     is_pi_active = any(data.startswith(sig) for sig in CONFIG['tv_mode_bytes'])
@@ -273,29 +270,22 @@ def shutdown_handler(signum, frame):
 def main():
     global UINPUT_DEVICE
     logger.info("Starting can_keyboard_control.py service...")
-
     if not load_and_initialize_config(): sys.exit(1)
-
     with initialize_uinput_device() as uinput_dev:
         if not uinput_dev: sys.exit(1)
-        
         UINPUT_DEVICE = uinput_dev
         setup_signal_handlers()
         state = ControlState()
-
         if not initialize_zmq_subscriber(): sys.exit(1)
-        
         logger.info("--- Service is running ---")
         while RUNNING:
             try:
-                topic_bytes, msg_bytes = ZMQ_SUB_SOCKET.recv_multipart()
+                _, msg_bytes = ZMQ_SUB_SOCKET.recv_multipart()
                 msg_dict = json.loads(msg_bytes.decode('utf-8'))
                 can_id = msg_dict.get('arbitration_id')
-
                 if FEATURES.get('mmi_controls') and can_id == CONFIG['can_ids']['mmi']: handle_mmi_message(msg_dict, state)
                 elif FEATURES.get('mfsw_controls') and can_id == CONFIG['can_ids']['mfsw']: handle_mfsw_message(msg_dict, state)
                 elif FEATURES.get('media_control') and can_id == CONFIG['can_ids']['source']: handle_source_message(msg_dict, state)
-
             except zmq.error.Again:
                 if time.time() - state.last_status_log_time > 60: state.log_periodic_status()
             except (zmq.ZMQError, json.JSONDecodeError, UnicodeDecodeError) as e:
@@ -304,7 +294,7 @@ def main():
                 initialize_zmq_subscriber()
                 time.sleep(5)
             except Exception:
-                logger.critical("An unexpected critical error occurred in main loop.", exc_info=True)
+                logger.critical("An unexpected critical error in main loop.", exc_info=True)
                 break
 
     logger.info("Main loop terminated. Closing resources.")
