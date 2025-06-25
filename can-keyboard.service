@@ -1,17 +1,15 @@
 [Unit]
-Description=CAN Keyboard Control Service (Audi RNS-E)
-Requires=configure-can0.service
-After=configure-can0.service graphical.target
+Description=RNS-E CAN-Bus Keyboard Simulation (uinput)
+After=can-handler.service
+Wants=can-handler.service
 
 [Service]
+ExecStart=/usr/bin/python3 ${REPO_DIR}/can_keyboard.py
+WorkingDirectory=${REPO_DIR}
+Restart=always
+RestartSec=3
 User=pi
-Group=pi
-WorkingDirectory=/home/pi/
-Environment="DISPLAY=:0"
-Environment="XAUTHORITY=/home/pi/.Xauthority"
-ExecStart=/usr/bin/python3 /home/pi/can_keyboard_control.py
-Restart=on-failure
-RestartSec=5
+Group=input
 
 [Install]
-WantedBy=graphical.target
+WantedBy=multi-user.target
