@@ -7,7 +7,8 @@ A comprehensive suite of `systemd` services designed to deeply integrate a Raspb
 This project goes beyond simple button presses, providing robust, persistent features that make the Raspberry Pi feel like a native part of the vehicle's electronics ecosystem. It is designed for stability, efficiency, and safety, with a focus on protecting your SD card and ensuring predictable behavior.
 
   
-*(Suggestion: Replace with a photo of your project in action\!)*
+![RNS-E running AA](https://github.com/user-attachments/assets/86b7dc3b-a92d-40d9-ac3f-57918fd4ecac)
+
 
 ## Key Features
 
