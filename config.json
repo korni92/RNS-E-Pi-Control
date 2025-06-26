@@ -26,7 +26,7 @@
       "trigger": "ignition_off"
     },
     "tv_simulation": {
-      "enabled": true
+      "enabled": false
     },
     "fis_display": {
       "enabled": true,
@@ -49,9 +49,13 @@
     "long_press_message_count": 5,
     "extended_long_press_message_count": 30,
     "shutdown_delay_ignition_off_seconds": 5,
-    "time_sync_threshold_minutes": 1.0
+    "time_sync_threshold_minutes": 1.0,
+    "daynight_cooldown_seconds": 10
   },
-  "mmi_scroll_commands": ["0,32", "0,64"],
+  "mmi_scroll_commands": [
+    "0,32",
+    "0,64"
+  ],
   "key_mappings": {
     "mmi_short": {
       "1,0": "KEY_V",
@@ -90,7 +94,10 @@
       "scroll_up": "0x04",
       "scroll_down": "0x05",
       "mode_press": "0x08",
-      "release": ["0x00", "0x00"]
+      "release": [
+        "0x00",
+        "0x00"
+      ]
     },
     "mfsw": {
       "scroll_up": "KEY_VOLUMEUP",
@@ -100,7 +107,9 @@
     }
   },
   "source_data": {
-    "tv_mode": ["0x37"],
+    "tv_mode": [
+      "0x37"
+    ],
     "play_key": "KEY_X",
     "pause_key": "KEY_C"
   }
