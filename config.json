@@ -107,9 +107,7 @@
     }
   },
   "source_data": {
-    "tv_mode": [
-      "0x37"
-    ],
+    "tv_mode_identifier": "0x37",
     "play_key": "KEY_X",
     "pause_key": "KEY_C"
   }
