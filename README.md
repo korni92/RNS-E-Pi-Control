@@ -202,16 +202,16 @@ sudo nano /etc/systemd/system/can-handler.service
 ```ini
 [Unit]
 Description=RNS-E CAN-Bus Handler
-Requires=configure-can0.service
-After=configure-can0.service
+Requires=configure-can0.service 
+After=configure-can0.service 
 
 [Service]
-ExecStart=/usr/bin/python3 /home/pi/RNS-E-Pi-Control/can_handler.py
-WorkingDirectory=/home/pi/RNS-E-Pi-Control
-User=pi
+User=pi 
 Group=pi
+WorkingDirectory=/home/pi/RNS-E-Pi-Control
+ExecStart=/usr/bin/python3 /home/pi/RNS-E-Pi-Control/can_handler.py
 Restart=on-failure
-RestartSec=5
+RestartSec=5 
 
 [Install]
 WantedBy=multi-user.target
@@ -231,17 +231,17 @@ sudo nano /etc/systemd/system/crankshaft-features.service
 ```ini
 [Unit]
 Description=RNS-E Crankshaft CAN Features
-Requires=can-handler.service
-After=can-handler.service
-BindsTo=can-handler.service
+Requires=can-handler.service 
+After=can-handler.service 
+BindsTo=can-handler.service 
 
-[Service]
-ExecStart=/usr/bin/python3 /home/pi/RNS-E-Pi-Control/crankshaft_can_features.py
+[Service] 
+ExecStart=/usr/bin/python3 /home/pi/RNS-E-Pi-Control/crankshaft_can_features.py 
 WorkingDirectory=/home/pi/RNS-E-Pi-Control
-User=pi
-Group=pi
-Restart=on-failure
-RestartSec=5
+User=pi 
+Group=pi 
+Restart=on-failure 
+RestartSec=5 
 
 [Install]
 WantedBy=multi-user.target
@@ -259,19 +259,19 @@ sudo nano /etc/systemd/system/keyboard-control.service
 \<summary\>Click to view content\</summary\>
 
 ```ini
-[Unit]
+[Unit] 
 Description=RNS-E CAN-Bus Keyboard Simulation (uinput)
-Requires=can-handler.service
-After=can-handler.service
-BindsTo=can-handler.service
+Requires=can-handler.service 
+After=can-handler.service 
+BindsTo=can-handler.service 
 
 [Service]
-ExecStart=/usr/bin/python3 /home/pi/RNS-E-Pi-Control/can_keyboard_control.py
+ExecStart=/usr/bin/python3 /home/pi/RNS-E-Pi-Control/can_keyboard_control.py 
 WorkingDirectory=/home/pi/RNS-E-Pi-Control
-User=pi
-Group=input
-Restart=on-failure
-RestartSec=3
+Restart=on-failure 
+RestartSec=3 
+User=pi 
+Group=input 
 
 [Install]
 WantedBy=multi-user.target
@@ -298,10 +298,9 @@ BindsTo=can-handler.service
 [Service]
 ExecStart=/usr/bin/python3 /home/pi/RNS-E-Pi-Control/can_fis_writer.py
 WorkingDirectory=/home/pi/RNS-E-Pi-Control
-User=pi
-Group=pi
 Restart=on-failure
 RestartSec=10
+User=pi
 
 [Install]
 WantedBy=multi-user.target
