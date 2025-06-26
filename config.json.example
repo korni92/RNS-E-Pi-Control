@@ -33,7 +33,7 @@
       "line1": "Crank",
       "line2": "Shaft"
     },
-    "media_control": true,
+    "source_controls": true,
     "mmi_controls": true,
     "mfsw_controls": true,
     "system_actions": true,
