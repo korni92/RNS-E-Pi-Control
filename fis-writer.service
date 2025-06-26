@@ -1,0 +1,16 @@
+[Unit]
+Description=RNS-E FIS Display Writer
+Requires=can-handler.service
+After=can-handler.service
+BindsTo=can-handler.service
+
+[Service]
+ExecStart=/usr/bin/python3 /home/pi/RNS-E-Pi-Control/can_fis_writer.py
+WorkingDirectory=/home/pi/RNS-E-Pi-Control
+Restart=on-failure
+RestartSec=10
+User=pi
+
+[Install]
+WantedBy=multi-user.target
+

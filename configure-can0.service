@@ -1,0 +1,13 @@
+[Unit]
+Description=Configure can0 Interface
+Wants=network.target
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=/sbin/ip link set can0 up type can bitrate 100000
+RemainAfterExit=true
+
+[Install]
+WantedBy=multi-user.target
+

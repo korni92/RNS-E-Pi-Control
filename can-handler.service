@@ -1,0 +1,15 @@
+[Unit]
+Description=RNS-E CAN-Bus Handler
+Requires=configure-can0.service 
+After=configure-can0.service 
+
+[Service]
+User=pi 
+Group=pi
+WorkingDirectory=/home/pi/RNS-E-Pi-Control
+ExecStart=/usr/bin/python3 /home/pi/RNS-E-Pi-Control/can_handler.py
+Restart=on-failure
+RestartSec=5 
+
+[Install]
+WantedBy=multi-user.target
