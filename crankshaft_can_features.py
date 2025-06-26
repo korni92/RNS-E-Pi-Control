@@ -6,14 +6,6 @@
 # Raspberry Pi running Crankshaft. It both listens for specific CAN messages
 # to trigger system actions and periodically sends messages to simulate devices.
 #
-# Receiving Features:
-#  - Automatic Day/Night Mode.
-#  - System time synchronization.
-#  - Automatic shutdown based on ignition/key status.
-#
-# Sending Features:
-#  - TV-Tuner presence simulation to enable the video input on RNS-E head units.
-#
 # Designed to run as a robust, long-running systemd service.
 #
 
@@ -60,6 +52,7 @@ class CrankshaftState:
         # Receiver states
         self.light_status = 0
         self.last_daynight_mode = None
+        self.last_mode_change_time = 0
         self.time_synced_this_session = False
         self.last_kl15_status = 1
         self.last_kls_status = 1
@@ -81,7 +74,8 @@ class CrankshaftState:
             trigger = auto_shutdown_config.get('trigger', 'N/A')
             shutdown_status = f"Pending ({remaining:.0f}s left, Trigger: {trigger})"
         else:
-            shutdown_status = f"Armed (Trigger: {auto_shutdown_config.get('trigger', 'N/A')})"
+            trigger = auto_shutdown_config.get('trigger', 'N/A')
+            shutdown_status = f"Armed (Trigger: {trigger})"
 
         logger.info(
             f"Status | "
@@ -108,6 +102,7 @@ def load_and_initialize_config(config_path='/home/pi/config.json'):
 
     try:
         FEATURES = cfg.setdefault('features', {})
+        FEATURES.setdefault('day_night_mode', False)
         FEATURES.setdefault('auto_shutdown', {'enabled': False})
         if FEATURES['auto_shutdown'].get('trigger') not in ['ignition_off', 'key_pulled']:
             FEATURES['auto_shutdown']['trigger'] = 'ignition_off'
@@ -126,6 +121,7 @@ def load_and_initialize_config(config_path='/home/pi/config.json'):
             },
             'daynight_script_path': cfg.get('paths', {}).get('crankshaft_daynight_script'),
             'shutdown_delay': thresholds.get('shutdown_delay_ignition_off_seconds', 300),
+            'daynight_cooldown_seconds': thresholds.get('daynight_cooldown_seconds', 10),
             'car_time_zone': FEATURES.get('car_time_zone', 'UTC'),
         }
         logger.info("Configuration loaded successfully.")
@@ -191,8 +187,7 @@ def initialize_zmq_subscriber():
 # --- Message Sending Logic ---
 def send_tv_presence_message():
     """
-    Sends the CAN message 0x602 to simulate a TV tuner for the RNS-E.
-    Payload '0912300000000000' means: Tuner ON, 50Hz (PAL), Mode 18 (PAL B/G).
+    Sends the CAN message to simulate a TV tuner for the RNS-E.
     """
     payload = "0912300000000000"
     send_can_message(CONFIG['can_ids']['tv_presence'], payload)
@@ -200,16 +195,25 @@ def send_tv_presence_message():
 
 # --- Message Receiving Handlers ---
 def handle_light_status_message(msg, state):
-    """Processes light status messages to toggle day/night mode."""
+    """Processes light status messages to toggle day/night mode, with a cooldown."""
+    if not FEATURES.get('day_night_mode', False):
+        return
+
     try:
         new_status = 1 if bytes.fromhex(msg['data_hex'])[1] > 0 else 0
         if new_status != state.light_status:
             state.light_status = new_status
             mode = "night" if new_status == 1 else "day"
-            logger.info(f"Light status changed. Setting mode to '{mode}'.")
-            if mode != state.last_daynight_mode:
+            
+            cooldown = CONFIG.get('daynight_cooldown_seconds', 10)
+            if mode != state.last_daynight_mode and (time.time() - state.last_mode_change_time > cooldown):
+                logger.info(f"Light status changed. Setting mode to '{mode}'. Starting {cooldown}s cooldown.")
                 if execute_system_command([CONFIG['daynight_script_path'], "app", mode]):
                     state.last_daynight_mode = mode
+                    state.last_mode_change_time = time.time()
+            else:
+                logger.debug(f"Light status changed to '{mode}', but change is suppressed by cooldown or no-op.")
+                
     except (IndexError, ValueError) as e:
         logger.warning(f"Could not parse light status message: {e}")
 
@@ -218,7 +222,7 @@ def handle_time_data_message(msg, state):
     if state.time_synced_this_session or msg['dlc'] < 8: return
     try:
         data_hex = msg['data_hex']
-        if not (int(data_hex[0:2], 16) >> 4) & 0x01: return # Skip if quality bit is not set
+        if not (int(data_hex[0:2], 16) >> 4) & 0x01: return
 
         car_dt = datetime(
             year=(int(data_hex[12:14], 16) * 100) + int(data_hex[14:16], 16),
@@ -305,6 +309,14 @@ def main():
 
     setup_signal_handlers()
     state = CrankshaftState()
+
+    logger.info("Ensuring system starts in day mode by removing potential stale night mode flag.")
+    try:
+        subprocess.run(['sudo', 'rm', '-f', '/tmp/night_mode_enabled'], check=True)
+        state.last_daynight_mode = 'day'
+        state.light_status = 0
+    except Exception as e:
+        logger.error(f"Could not remove /tmp/night_mode_enabled on startup, continuing anyway: {e}")
 
     if not initialize_zmq_subscriber():
         sys.exit(1)
