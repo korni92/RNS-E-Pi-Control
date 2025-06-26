@@ -7,7 +7,7 @@
 #
 # This script is designed to run as a systemd service and uses python-uinput.
 # It uses a message counter logic and a global cooldown for robust press detection.
-# Version: Final/Robust
+# Version: Final/Robust with Precise Source Toggle logic
 #
 
 import zmq
@@ -82,6 +82,8 @@ def load_and_initialize_config(config_path='/home/pi/config.json'):
         FEATURES = cfg['features']
         key_maps = cfg['key_mappings']
         thresholds = cfg['thresholds']
+        source_data = cfg['source_data']
+        
         CONFIG = {
             'zmq_address': cfg['zmq']['publish_address'],
             'can_ids': {k: int(v, 16) for k, v in cfg['can_ids'].items()},
@@ -92,9 +94,9 @@ def load_and_initialize_config(config_path='/home/pi/config.json'):
             'mfsw_cmds': {k: int(v, 16) for k, v in key_maps['mfsw_commands'].items() if isinstance(v, str)},
             'mfsw_release_cmds': [int(v, 16) for v in key_maps['mfsw_commands']['release']],
             'mfsw_map': {k: parse_key(v) for k, v in key_maps['mfsw'].items()},
-            'tv_mode_bytes': [bytes.fromhex(s.replace("0x", "")) for s in cfg['source_data']['tv_mode']],
-            'play_key': parse_key(cfg['source_data']['play_key']),
-            'pause_key': parse_key(cfg['source_data']['pause_key']),
+            'tv_mode_id': int(source_data['tv_mode_identifier'], 16),
+            'play_key': parse_key(source_data['play_key']),
+            'pause_key': parse_key(source_data['pause_key']),
             'cooldown': thresholds['cooldown_period'],
             'long_press_count': thresholds['long_press_message_count'],
             'extended_press_count': thresholds.get('extended_long_press_message_count', 30),
@@ -114,11 +116,19 @@ def initialize_zmq_subscriber():
         ZMQ_SUB_SOCKET = ZMQ_CONTEXT.socket(zmq.SUB)
         ZMQ_SUB_SOCKET.set(zmq.RCVTIMEO, 1000)
         ZMQ_SUB_SOCKET.connect(CONFIG['zmq_address'])
+        
+        feature_map = {
+            'mmi': 'mmi_controls',
+            'mfsw': 'mfsw_controls',
+            'source': 'source_controls'
+        }
+
         for key, can_id in CONFIG['can_ids'].items():
-            if FEATURES.get(f'{key}_controls', True):
-                 topic = f"CAN_{can_id:03X}"
-                 logger.info(f"Subscribing to topic: {topic}")
-                 ZMQ_SUB_SOCKET.setsockopt_string(zmq.SUBSCRIBE, topic)
+            feature_name = feature_map.get(key)
+            if feature_name and FEATURES.get(feature_name, False):
+                topic = f"CAN_{can_id:03X}"
+                logger.info(f"Subscribing to topic: {topic} (feature: {feature_name})")
+                ZMQ_SUB_SOCKET.setsockopt_string(zmq.SUBSCRIBE, topic)
         return True
     except zmq.ZMQError as e:
         logger.error(f"Failed to initialize ZeroMQ subscriber: {e}")
@@ -135,9 +145,8 @@ def get_all_possible_keys():
     return list(keys)
 
 def initialize_uinput_device():
-    """Creates the virtual keyboard device, waiting for /dev/uinput if necessary."""
     uinput_path = "/dev/uinput"
-    for _ in range(10): # Wait for the device to appear, max 10 seconds
+    for _ in range(10): 
         if os.path.exists(uinput_path):
             logger.info(f"'{uinput_path}' found.")
             break
@@ -159,7 +168,6 @@ def initialize_uinput_device():
         return device
     except Exception as e:
         logger.critical(f"FATAL: Could not initialize uinput keyboard device: {e}", exc_info=True)
-        logger.critical("This may be due to missing permissions. Check user/group and udev rules.")
         return None
 
 def press_key(key):
@@ -178,7 +186,7 @@ def run_command(command_str):
     except Exception as e:
         logger.error(f"Failed to execute command '{command_str}': {e}")
 
-# --- MMI Handler with Corrected Counter/Cooldown Logic ---
+# --- Message Handlers ---
 def handle_mmi_message(msg, state):
     if msg['dlc'] < 5: return
     data = bytes.fromhex(msg['data_hex'])
@@ -186,10 +194,10 @@ def handle_mmi_message(msg, state):
     now = time.time()
 
     if status == 0x01: # Press Event
-        if cmd not in state.mmi_press_counters: # New physical press
+        if cmd not in state.mmi_press_counters: 
             state.reset_mmi_state(cmd)
             if now - state.last_mmi_action_info.get('time', 0) < CONFIG['cooldown']:
-                return # In cooldown, ignore new press
+                return 
         
         current_count = state.mmi_press_counters.get(cmd, 0) + 1
         state.mmi_press_counters[cmd] = current_count
@@ -243,9 +251,16 @@ def handle_mfsw_message(msg, state):
         state.mfsw_mode_long_action_fired = False
 
 def handle_source_message(msg, state):
-    if msg['dlc'] < 8: return
+    """Processes RNS-E source messages to auto-play/pause media."""
+    # We need at least 4 bytes to check the 4th one (index 3)
+    if msg['dlc'] < 4: return
     data = bytes.fromhex(msg['data_hex'])
-    is_pi_active = any(data.startswith(sig) for sig in CONFIG.get('tv_mode_bytes', []))
+    
+    # Precise check: Examine the 4th byte (index 3) for the TV mode identifier.
+    # This corresponds to RA4_Radio_Para2 in the DBC and is more robust.
+    current_mode_byte = data[3]
+    is_pi_active = (current_mode_byte == CONFIG.get('tv_mode_id'))
+
     if is_pi_active != state.is_pi_source_active:
         state.is_pi_source_active = is_pi_active
         key_to_press = CONFIG['play_key'] if is_pi_active else CONFIG['pause_key']
@@ -270,15 +285,14 @@ def main():
     logger.info("Starting can_keyboard_control.py service...")
     if not load_and_initialize_config(): sys.exit(1)
     
-    uinput_dev = initialize_uinput_device()
-    if not uinput_dev:
-        sys.exit(1)
-    UINPUT_DEVICE = uinput_dev
+    UINPUT_DEVICE = initialize_uinput_device()
+    if not UINPUT_DEVICE:
+        logger.warning("Continuing without virtual keyboard. Only logging will occur.")
     
     setup_signal_handlers()
     state = ControlState()
     if not initialize_zmq_subscriber():
-        UINPUT_DEVICE.destroy()
+        if UINPUT_DEVICE: UINPUT_DEVICE.destroy()
         sys.exit(1)
         
     logger.info("--- Service is running ---")
@@ -288,9 +302,14 @@ def main():
                 _, msg_bytes = ZMQ_SUB_SOCKET.recv_multipart()
                 msg_dict = json.loads(msg_bytes.decode('utf-8'))
                 can_id = msg_dict.get('arbitration_id')
-                if FEATURES.get('mmi_controls') and can_id == CONFIG['can_ids'].get('mmi'): handle_mmi_message(msg_dict, state)
-                elif FEATURES.get('mfsw_controls') and can_id == CONFIG['can_ids'].get('mfsw'): handle_mfsw_message(msg_dict, state)
-                elif FEATURES.get('media_control') and can_id == CONFIG['can_ids'].get('source'): handle_source_message(msg_dict, state)
+                
+                # Check for feature flags before calling handlers
+                if can_id == CONFIG['can_ids'].get('mmi') and FEATURES.get('mmi_controls', False):
+                    handle_mmi_message(msg_dict, state)
+                elif can_id == CONFIG['can_ids'].get('mfsw') and FEATURES.get('mfsw_controls', False):
+                    handle_mfsw_message(msg_dict, state)
+                elif can_id == CONFIG['can_ids'].get('source') and FEATURES.get('source_controls', False):
+                    handle_source_message(msg_dict, state)
             
             if time.time() - state.last_status_log_time > 60:
                 state.log_periodic_status()
