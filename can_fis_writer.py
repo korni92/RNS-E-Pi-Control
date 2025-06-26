@@ -109,7 +109,8 @@ def prepare_fis_text(text):
     centered_text = text.center(8)
     hex_str = centered_text.encode('iso-8859-1', errors='unidecode_fallback').hex().upper()
     payload = "".join(audi_ascii_map.get(hex_str[i:i+2], '20') for i in range(0, len(hex_str), 2))
-    return payload.ljust(16, '20')
+    # --- FIX: Use a single space ' ' for padding, not the string '20' ---
+    return payload.ljust(16, ' ')
 
 def send_fis_display_messages():
     """Sends the configured text lines to the instrument cluster."""
