@@ -1,280 +1,361 @@
-# Crankshaft CAN Control for Audi RNS-E MMI & MFSW
+# RNS-E Pi Control for Crankshaft-NG
 
-## Purpose
+**Last Updated: June 26, 2025**
 
-This project allows controlling a Raspberry Pi running Crankshaft NG (an Android Auto & CarPlay head unit software - see [Crankshaft NG GitHub](https://github.com/opencardev/crankshaft)) using:
-1.  MMI (Multi Media Interface) controls connected to an Audi RNS-E navigation unit.
-2.  MFSW (Multi-Function Steering Wheel) controls.
+A comprehensive suite of `systemd` services designed to deeply integrate a Raspberry Pi (running Crankshaft or a similar OS) with an Audi RNS-E head unit and the car's CAN bus.
 
-Interactions are captured from the vehicle's Infotainment CAN bus (100 kbit/s) and translated into simulated keyboard presses using `pynput`. Crankshaft then interprets these key presses for navigation and control within Android Auto. This version also includes logic for automatic media pause/play based on RNS-E source changes.
+This project goes beyond simple button presses, providing robust, persistent features that make the Raspberry Pi feel like a native part of the vehicle's electronics ecosystem. It is designed for stability, efficiency, and safety, with a focus on protecting your SD card and ensuring predictable behavior.
 
-This guide documents the steps to replicate the setup (Status: Beta 1.2 - MFSW & Auto Pause/Play added, using `pynput`).
+  
+*(Suggestion: Replace with a photo of your project in action\!)*
 
-## How it Works
+## Key Features
 
-1.  **MMI/MFSW Input:** User interacts with RNS-E MMI or MFSW controls.
-2.  **CAN Message:** The RNS-E or MFSW interface sends specific CAN messages (e.g., ID `0x461` for MMI, `0x5C3` for MFSW).
-3.  **CAN HAT Reception:** A Raspberry Pi equipped with an MCP2515-based CAN HAT receives these messages via the `can0` interface.
-4.  **Python Script:** `can_keyboard_control.py` listens for these specific CAN IDs.
-5.  **Message Parsing:** The script decodes data bytes to identify the specific action, supporting short and long presses for MMI buttons and the MFSW "Mode" button.
-6.  **Keyboard Simulation:** Uses the `pynput` library to simulate corresponding keyboard presses.
-7.  **Crankshaft Control:** Crankshaft (and the underlying Android Auto session) receives the simulated key press and performs the associated action.
-8.  **Auto Pause/Play:** The script also listens to RNS-E source changes (ID `0x661`) to automatically simulate media play/pause commands.
+  - **Seamless Multimedia Control:** Translate MMI and steering wheel controls (MFSW) into virtual keyboard presses (`uinput`) to control your media player.
+  - **Automatic Day/Night Mode:** Listens to the car's light sensor to automatically switch the Crankshaft UI theme. Includes a configurable cooldown period to prevent UI "flickering" from bouncing CAN signals.
+  - **Safe Auto-Shutdown:** Intelligently detects when the ignition is off or the key is pulled, waits for a configurable delay, and then safely shuts down the Raspberry Pi to prevent battery drain.
+  - **System Time Synchronization:** Automatically sets the Raspberry Pi's system clock based on the time broadcast by the car's instrument cluster.
+  - **Custom FIS Display Text:** Send custom two-line messages to the instrument cluster display (FIS).
+  - **TV-Tuner Simulation:** Emulates the presence of a factory TV Tuner, unlocking the video input on the RNS-E for sources like a backup camera.
+  - **Robust Service Management:** Uses a hardened, multi-service `systemd` setup with strict dependencies, ensuring services start in the correct order and are managed properly.
+  - **SD Card Protection:** Utilizes RAM-based temporary directories (`tmpfs`) for logs and communication sockets to minimize writes to the SD card.
 
-## Requirements
+## Prerequisites
 
 ### Hardware
 
-* Raspberry Pi (3B+ or 4 recommended) running Crankshaft NG.
-* MCP2515-based CAN HAT (e.g., PiCAN2, Waveshare CAN HAT, or similar).
-* Audi RNS-E Navigation Unit and/or MFSW.
-* Connection to the Audi Infotainment CAN bus (100 kbit/s). Typically available at the RNS-E Quadlock Connector D, Pin 9 (CAN-H) and Pin 10 (CAN-L).
-* Appropriate wiring and power supplies.
+  * Raspberry Pi (3B+ or newer recommended).
+  * An operating system like Crankshaft NG, or a base Raspberry Pi OS.
+  * A CAN-HAT based on the MCP2515 chipset.
+  * A quality SD Card.
 
 ### Software
 
-* Crankshaft NG distribution installed on the Raspberry Pi SD card (configured to run under an **X11 server environment** for `pynput` to work).
-* SSH access or a terminal on the Raspberry Pi.
-* Required system packages: `can-utils`, `python3`, `python3-pip`.
-* Required Python libraries: `python-can`, `pynput`.
+  * Python 3
+  * `git` and `pip`
 
-## Setup Instructions
+## Manual Installation Guide
 
-**Step 1: Connect Hardware & Enable SPI**
+This guide provides the step-by-step commands to install and configure the entire project, giving you full control and insight into the setup.
 
-1.  Shut down the Raspberry Pi and correctly install the CAN HAT onto the GPIO pins.
-2.  Connect the CAN HAT's CAN-H and CAN-L terminals to the vehicle's/RNS-E's Infotainment CAN bus (100 kbit/s). Ensure correct polarity. Verify bus termination (usually, the termination jumper/switch on the HAT should be **OFF** as the RNS-E and Instrument Cluster often provide termination).
-3.  Power up the Raspberry Pi.
-4.  Open a terminal and run `sudo raspi-config`.
-5.  Navigate to `Interface Options` -> `SPI`.
-6.  Select `Yes` to enable the SPI interface.
-7.  Exit `raspi-config`.
+### Step 1: System Preparation
 
-**Step 2: Configure Device Tree Overlay (DTO)**
-
-1.  Make the boot partition writable. The mount point is usually `/boot/firmware` on newer RPi OS (like Bullseye or later) or `/boot` on older ones.
-    ```bash
-    # Try this first for newer systems:
-    sudo mount -o remount,rw /boot/firmware
-    # If the above fails with "not mounted" or similar, try:
-    # sudo mount -o remount,rw /boot
-    ```
-    *Only one of these commands will typically succeed and be necessary, depending on your OS setup.*
-2.  Edit the boot configuration file (use the path that corresponds to your system, usually the one from the successful mount command):
-    ```bash
-    sudo nano /boot/firmware/config.txt
-    # OR, for older systems:
-    # sudo nano /boot/config.txt
-    ```
-3.  Add the following lines at the end of the file.
-    **IMPORTANT:** Replace `YOUR_OSCILLATOR_HZ` with the frequency of the crystal oscillator on your specific HAT in Hz (e.g., `8000000` for 8MHz, `12000000` for 12MHz, or `16000000` for 16MHz) and `YOUR_INTERRUPT_PIN` with the GPIO pin number your HAT uses for interrupts (often `25`). **Consult your HAT's documentation for these values! Incorrect values will cause CAN errors.**
-    ```text
-    # --- MCP2515 CAN HAT ---
-    dtparam=spi=on
-    dtoverlay=mcp2515-can0,oscillator=YOUR_OSCILLATOR_HZ,interrupt=YOUR_INTERRUPT_PIN,spimaxfrequency=1000000
-    ```
-4.  Save the file and exit (`Ctrl+O`, `Enter`, `Ctrl+X`).
-5.  Make the boot partition read-only again:
-    ```bash
-    # Use the same mount point as in substep 1
-    sudo mount -o remount,ro /boot/firmware
-    # OR
-    # sudo mount -o remount,ro /boot
-    ```
-6.  Reboot the Raspberry Pi for the changes to take effect:
-    ```bash
-    sudo reboot
-    ```
-
-**Step 3: Install Software Dependencies**
-
-1.  Enable Write Access to the root filesystem (Crankshaft NG often uses a read-only rootfs):
-    ```bash
-    sudo mount -o remount,rw /
-    ```
-2.  Update Package Lists:
-    ```bash
-    sudo apt update
-    ```
-3.  Install Required System Packages:
-    ```bash
-    sudo apt install can-utils python3-pip
-    ```
-4.  Install Python Libraries (system-wide):
-    ```bash
-    sudo python3 -m pip install --upgrade pip
-    sudo python3 -m pip install --force-reinstall python-can pynput
-    ```
-
-**Step 4: Create Python Control Script**
-
-1.  Create the script file in the `pi` user's home directory:
-    ```bash
-    nano /home/pi/can_keyboard_control.py
-    ```
-2.  Paste the Python code into the editor:
-    
-3.  Save (`Ctrl+O`, `Enter`) and exit (`Ctrl+X`).
-
-**Step 5: Correct Script Ownership**
+If your filesystem is read-only, make it writable to install software and create configuration files.
 
 ```bash
-sudo chown pi:pi /home/pi/can_keyboard_control.py
+sudo mount -o remount,rw /
+sudo mount -o remount,rw /boot
 ```
 
-**Step 6: Create/Verify systemd Service for CAN Interface (`configure-can0.service`)**
+### Step 2: Install System Dependencies
 
-1.  File: `/etc/systemd/system/configure-can0.service`
-    ```bash
-    # sudo mount -o remount,rw / # If needed
-    sudo nano /etc/systemd/system/configure-can0.service
-    ```
-2.  Content:
-    ```ini
-    [Unit]
-    Description=Configure can0 Interface (100kbit/s)
-    After=network.target network-online.target
-    Wants=network-online.target
-
-    [Service]
-    Type=oneshot
-    RemainAfterExit=yes
-    ExecStart=/sbin/ip link set can0 up type can bitrate 100000
-
-    [Install]
-    WantedBy=multi-user.target
-    ```
-3.  Save and exit.
-
-**Step 7: Create/Verify systemd Service for Python Script (`can-keyboard.service`)**
-
-1.  File: `/etc/systemd/system/can-keyboard.service`
-    ```bash
-    # sudo mount -o remount,rw / # If needed
-    sudo nano /etc/systemd/system/can-keyboard.service
-    ```
-2.  Content (paths for `pi` user):
-    ```ini
-    [Unit]
-    Description=CAN Keyboard Control Service (Audi RNS-E & MFSW)
-    Requires=configure-can0.service
-    After=configure-can0.service graphical.target
-
-    [Service]
-    User=pi
-    Group=pi
-    WorkingDirectory=/home/pi/
-    Environment="DISPLAY=:0"
-    Environment="XAUTHORITY=/home/pi/.Xauthority"
-    ExecStart=/usr/bin/python3 /home/pi/can_keyboard_control.py
-    Restart=on-failure
-    RestartSec=5
-
-    [Install]
-    WantedBy=graphical.target
-    ```
-3.  Save and exit.
-
-**Step 8: Finalize systemd Configuration**
+Install the core packages required by the operating system via `apt-get`.
 
 ```bash
+# Update the package list first
+sudo apt-get update
+
+# Install all required packages
+sudo apt-get install -y git python3-pip can-utils python3-unidecode python3-zmq python3-uinput
+```
+
+### Step 3: Grant Permissions for Virtual Keyboard
+
+The `uinput` library needs special permissions to create a virtual keyboard.
+
+1.  **Add `pi` User to `input` Group:** This gives the user the right to handle input devices.
+
+    ```bash
+    sudo usermod -a -G input pi
+    ```
+
+    **Note:** A full reboot is required for this group change to apply.
+
+2.  **Create a `udev` Rule:** This ensures the `/dev/uinput` device has the correct permissions every time the system boots.
+
+    ```bash
+    sudo nano /etc/udev/rules.d/99-uinput.rules
+    ```
+
+    Paste the following single line into the file:
+
+    ```
+    KERNEL=="uinput", MODE="0660", GROUP="input", OPTIONS+="static_node=uinput"
+    ```
+
+    Save and exit (`Ctrl+X`, `Y`, `Enter`).
+
+### Step 4: Download Project Files
+
+Clone the project repository from GitHub into the `pi` user's home directory.
+
+```bash
+cd /home/pi
+git clone https://github.com/korni92/RNS-E-Pi-Control.git
+sudo chown -R pi:pi /home/pi/RNS-E-Pi-Control
+```
+
+### Step 5: Install Python Dependencies
+
+Install the remaining Python libraries using `pip`.
+
+```bash
+sudo pip3 install python-can pyserial pytz
+```
+
+### Step 6: Configure CAN-HAT (`/boot/config.txt`)
+
+Tell the Raspberry Pi how to communicate with your CAN-HAT.
+
+```bash
+sudo nano /boot/config.txt
+```
+
+Add the following lines. **You must replace `12000000` and `25` with the correct `oscillator` and `interrupt` values for your specific CAN-HAT\!**
+
+```ini
+# --- RNS-E Pi Control CAN HAT ---
+dtparam=spi=on
+dtoverlay=mcp2515-can0,oscillator=12000000,interrupt=25,spimaxfrequency=1000000
+```
+
+Save and exit.
+
+### Step 7: Create Custom Temporary Directories
+
+To protect your SD card, create directories in RAM for logs and the communication socket.
+
+1.  **Create the mount points:**
+    ```bash
+    sudo mkdir -p /var/log/rnse_control /run/rnse_control
+    sudo chown pi:pi /run/rnse_control
+    ```
+2.  **Open `/etc/fstab`** to make these directories permanent RAM-disks:
+    ```bash
+    sudo nano /etc/fstab
+    ```
+    Add these two lines at the end. Note the `uid` and `gid` options, which are crucial for giving the `pi` user permission to write logs.
+    ```fstab
+    tmpfs   /var/log/rnse_control   tmpfs   defaults,noatime,nosuid,nodev,uid=pi,gid=pi,size=16m 0 0
+    tmpfs   /run/rnse_control       tmpfs   defaults,noatime,nosuid,uid=pi,gid=pi,mode=0755,size=2m 0 0
+    ```
+    Save and exit.
+
+### Step 8: Create Project Configuration
+
+Copy the example configuration file and edit it to match your setup.
+
+```bash
+# Copy the template to the user's home directory
+cp /home/pi/RNS-E-Pi-Control/config.json /home/pi/config.json
+
+# Open the new configuration file for editing
+nano /home/pi/config.json
+```
+
+**Crucially, adjust the following settings:**
+
+  - `can_interface`: Should be `can0`.
+  - `car_time_zone`: Set to your local time zone (e.g., `"Europe/Berlin"`).
+  - `thresholds.daynight_cooldown_seconds`: Set to `10` to prevent screen flickering.
+  - Review other features and enable/disable them as desired.
+
+### Step 9: Create Hardened Systemd Services
+
+Create the five service files with robust dependencies. These have been optimized for reliability.
+
+**File 1: `/etc/systemd/system/configure-can0.service`**
+
+```bash
+sudo nano /etc/systemd/system/configure-can0.service
+```
+
+\<details\>
+\<summary\>Click to view content\</summary\>
+
+```ini
+[Unit]
+Description=Configure can0 Interface
+Wants=network.target
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=/sbin/ip link set can0 up type can bitrate 100000
+RemainAfterExit=true
+
+[Install]
+WantedBy=multi-user.target
+```
+
+\</details\>
+
+**File 2: `/etc/systemd/system/can-handler.service`**
+
+```bash
+sudo nano /etc/systemd/system/can-handler.service
+```
+
+\<details\>
+\<summary\>Click to view content\</summary\>
+
+```ini
+[Unit]
+Description=RNS-E CAN-Bus Handler
+Requires=configure-can0.service
+After=configure-can0.service
+
+[Service]
+ExecStart=/usr/bin/python3 /home/pi/RNS-E-Pi-Control/can_handler.py
+WorkingDirectory=/home/pi/RNS-E-Pi-Control
+User=pi
+Group=pi
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+```
+
+\</details\>
+
+**File 3: `/etc/systemd/system/crankshaft-features.service`**
+
+```bash
+sudo nano /etc/systemd/system/crankshaft-features.service
+```
+
+\<details\>
+\<summary\>Click to view content\</summary\>
+
+```ini
+[Unit]
+Description=RNS-E Crankshaft CAN Features
+Requires=can-handler.service
+After=can-handler.service
+BindsTo=can-handler.service
+
+[Service]
+ExecStart=/usr/bin/python3 /home/pi/RNS-E-Pi-Control/crankshaft_can_features.py
+WorkingDirectory=/home/pi/RNS-E-Pi-Control
+User=pi
+Group=pi
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+```
+
+\</details\>
+
+**File 4: `/etc/systemd/system/keyboard-control.service`**
+
+```bash
+sudo nano /etc/systemd/system/keyboard-control.service
+```
+
+\<details\>
+\<summary\>Click to view content\</summary\>
+
+```ini
+[Unit]
+Description=RNS-E CAN-Bus Keyboard Simulation (uinput)
+Requires=can-handler.service
+After=can-handler.service
+BindsTo=can-handler.service
+
+[Service]
+ExecStart=/usr/bin/python3 /home/pi/RNS-E-Pi-Control/can_keyboard_control.py
+WorkingDirectory=/home/pi/RNS-E-Pi-Control
+User=pi
+Group=input
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+```
+
+\</details\>
+
+**File 5: `/etc/systemd/system/fis-writer.service`**
+
+```bash
+sudo nano /etc/systemd/system/fis-writer.service
+```
+
+\<details\>
+\<summary\>Click to view content\</summary\>
+
+```ini
+[Unit]
+Description=RNS-E FIS Display Writer
+Requires=can-handler.service
+After=can-handler.service
+BindsTo=can-handler.service
+
+[Service]
+ExecStart=/usr/bin/python3 /home/pi/RNS-E-Pi-Control/can_fis_writer.py
+WorkingDirectory=/home/pi/RNS-E-Pi-Control
+User=pi
+Group=pi
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+```
+
+\</details\>
+
+### Step 10: Finalize and Reboot
+
+Enable the new services to start on boot and reboot the system for all changes to take effect.
+
+```bash
+# Reload the systemd manager to read the new service files
 sudo systemctl daemon-reload
-sudo systemctl enable configure-can0.service
-sudo systemctl enable can-keyboard.service
-# Optional: sudo systemctl is-enabled configure-can0.service can-keyboard.service
-```
 
-**Step 9: Reboot & Verify**
+# Enable all 5 services to start on boot
+sudo systemctl enable configure-can0.service can-handler.service crankshaft-features.service keyboard-control.service fis-writer.service
 
-```bash
+# Reboot the Raspberry Pi
 sudo reboot
 ```
-After reboot:
-* Check CAN interface: `ip -details link show can0` (expect UP, 100kbit/s, minimal errors).
-* Check Python service: `systemctl status can-keyboard.service` (expect active/running).
-* Check script logs for detailed messages: `journalctl -u can-keyboard.service` or `journalctl -f -u can-keyboard.service` for live view.
 
-**Step 10: Functional Test**
+After the reboot, your system is fully installed and operational\!
 
-* Test MMI controls (short/long press, scroll).
-* Test MFSW controls (scroll, mode short/long press).
-* Test Auto Pause/Play by changing RNS-E source to/from TV/Video.
+## Usage and Management
 
-**Step 11: Set Filesystem Read-Only (Crucial for in-car stability)**
+Here are the essential commands for managing your new services.
 
-Once everything is confirmed working:
+**Check the status of all services at once:**
+
 ```bash
-sudo mount -o remount,ro /
-# If you also remounted /boot or /boot/firmware for config.txt changes:
-# sudo mount -o remount,ro /boot/firmware
+systemctl status configure-can0.service can-handler.service crankshaft-features.service keyboard-control.service fis-writer.service
 ```
 
-**Step 12: Composite Video Output (TV-Out)**
+**Start or stop all services manually:**
 
-To use the 3.5mm jack for composite video output, ensure your `/boot/firmware/config.txt` (or `/boot/config.txt`) includes the following. These settings are configured for PAL.
-**Remember to replace `YOUR_OSCILLATOR_HZ` and `YOUR_INTERRUPT_PIN` in the CAN HAT DTO line (Step 2) with values matching your HAT.**
-```text
-# --- Composite Video Output Settings (for RNS-E PAL) ---
-enable_tvout=1
-sdtv_mode=2         # PAL for Europe/RNS-E
-sdtv_aspect=3       # 16:9 for RNS-E widescreen
-# This overlay helps prioritize composite output with the FKMS driver
-dtoverlay=vc4-fkms-v3d,composite=1
-# Optional: To prevent HDMI from interfering if a cable is connected
-# hdmi_ignore_hotplug=1
+```bash
+# To Start
+sudo systemctl start can-handler.service crankshaft-features.service keyboard-control.service fis-writer.service
+
+# To Stop
+sudo systemctl stop can-handler.service crankshaft-features.service keyboard-control.service fis-writer.service
 ```
-*A reboot is required after changes to `config.txt`.*
 
-**Step 13: Adjust Overscan Settings (Video Positioning)**
+*(Note: `configure-can0` is a one-shot service and doesn't need to be started/stopped manually after the first boot.)*
 
-If the composite video image is shifted or has incorrect borders:
-1.  Make the boot partition writable (see Step 2.1).
-2.  Edit `/boot/firmware/config.txt` (or `/boot/config.txt`):
-    ```bash
-    sudo nano /boot/firmware/config.txt # Or /boot/config.txt
-    ```
-3.  Adjust overscan settings:
-    * Ensure `disable_overscan=1` is **commented out** or set to `disable_overscan=0`.
-    * Experiment with `overscan_left`, `overscan_right`, `overscan_top`, `overscan_bottom`.
-        * **Positive values** increase the black border on that side (pushes image away from edge).
-        * **Negative values** decrease the black border (pulls image towards edge).
-        * Example: If picture is shifted left, try `overscan_left=16` or `overscan_right=-16`.
-        * Start with increments of 8 or 16.
-4.  **Save and Reboot** after each change to see the effect. Repeat until centered.
-5.  Set boot partition back to read-only (see Step 2.5).
+## Troubleshooting
 
-## Configuration (in `/home/pi/can_keyboard_control.py`)
+If a service fails to start, the first place to look is its detailed log using `journalctl`.
 
-The Python script is configurable via constants at the top:
+**Example:** To debug the keyboard service:
 
-* **CAN IDs:**
-    * `TARGET_CAN_ID_MMI`: For RNS-E MMI knob/buttons (default `0x461`).
-    * `TARGET_CAN_ID_MFSW`: For Steering Wheel Controls (default `0x5C3` - **verify for your car model!**).
-    * `TARGET_CAN_ID_SOURCE`: For RNS-E source status (default `0x661` - **verify for your RNS-E!**).
-* **Timings:**
-    * `COOLDOWN_PERIOD`: Prevents MMI button (non-scroll) repeats if held or pressed rapidly.
-    * `LONG_PRESS_THRESHOLD`: Number of "press" CAN messages received to distinguish short vs. long press for MMI and MFSW Mode button.
-* **Key Mappings (using `pynput` syntax):**
-    * `MMI_SCROLL_COMMANDS`: MMI command tuples that are exempt from cooldown/long-press logic (for knob rotation).
-    * `COMMAND_TO_KEY_SHORT_MMI`: Actions for short MMI button presses.
-    * `COMMAND_TO_KEY_LONG_MMI`: Actions for long MMI button presses (**USER MUST DEFINE THESE**).
-    * `MFSW_SCROLL_UP_KEY`, `MFSW_SCROLL_DOWN_KEY`, `MFSW_MODE_SHORT_PRESS_KEY`, `MFSW_MODE_LONG_PRESS_KEY`: Actions for MFSW buttons (**USER MUST DEFINE THESE** and verify MFSW CAN data).
-* **RNS-E Source Data:**
-    * `VIDEO_SOURCE_DATA_1`, `VIDEO_SOURCE_DATA_2`: Byte sequences identifying the RNS-E's TV/Video input for auto pause/play. (**VERIFY FOR YOUR RNS-E!**).
+```bash
+journalctl -u keyboard-control.service
+```
 
-## Troubleshooting / Important Notes
-
-* **X11 Dependency for `pynput`:** This script, due to `pynput`'s keyboard controller backend on Linux, **requires an X11 server to be running** (e.g., Crankshaft configured in X11 mode, not pure EGL/KMS). The `DISPLAY=:0` environment variable in the service file must point to this active X server. If Crankshaft runs without X11, the Python script will likely fail during `pynput` initialization with an "failed to acquire X connection" error. For non-X11 environments, input simulation via the kernel's `uinput` module (e.g., with the `python-uinput` library) would be a more robust alternative but requires significant script changes.
-* **CAN Errors (`ERROR-ACTIVE`/`ERROR-PASSIVE` on `can0`):** If `ip -details link show can0` shows persistent error states, double-check:
-    * The `oscillator` and `interrupt` values in `/boot/firmware/config.txt` **exactly** match your CAN HAT specifications. This is critical for correct bit timing.
-    * The CAN bus **termination** is correct (~60 Ohms between CAN-H and CAN-L when the system is powered down). Ensure the Pi HAT's termination jumper/switch is disabled unless it's at a physical end of the bus.
-    * The **bitrate** (100000) is correct for all devices on the Infotainment CAN bus.
-    * Wiring, especially **CAN-H/CAN-L polarity** and a **common ground (GND)** connection between the Pi's CAN HAT and the vehicle/RNS-E system.
-* **MFSW & RNS-E Source CAN Data:** The specific CAN messages (IDs and data bytes) for MFSW buttons and RNS-E source status can vary between car models, model years, and RNS-E firmware versions. Use `candump can0` while operating these controls/changing sources to identify the correct patterns for *your* specific vehicle and RNS-E unit. Adjust the constants and logic in the Python script accordingly.
-* **Permissions:** The `can-keyboard.service` runs as user `pi`. Ensure this user has necessary permissions if any paths or resources outside its home directory are accessed by the script. The `pi` user typically needs to be in the `input` group for `uinput`-based solutions (not currently used, but relevant if changing input method).
-
-## Disclaimer
-
-Modifying vehicle CAN bus systems carries inherent risks. Ensure you fully understand the implications before connecting any custom hardware or sending messages. Incorrect connections or CAN messages could potentially interfere with vehicle operation or damage components. This project is for experimental and educational purposes. Use at your own risk.
-
----
+Look for `Traceback` errors, `Permission denied`, or `No such file or directory`. These will tell you exactly what is wrong. Common issues include typos in file paths or incorrect permissions.
