@@ -103,6 +103,11 @@ Install the remaining Python libraries using `pip`.
 ```bash
 sudo pip3 install python-can pyserial pytz
 ```
+If using newer OS like Debian Bookworm, use this instead
+```bash
+sudo apt-get update
+sudo apt-get install git python3-pip can-utils python3-can python3-serial python3-tz python3-unidecode python3-zmq python3-uinput
+```
 
 ### Step 6: Configure CAN-HAT (`/boot/config.txt`)
 
