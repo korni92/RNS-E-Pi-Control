@@ -20,7 +20,10 @@
   },
   "features": {
     "day_night_mode": true,
-    "time_sync": true,
+    "time_sync": {
+      "enabled": true,
+      "data_format": "old_logic"
+    },
     "auto_shutdown": {
       "enabled": true,
       "trigger": "ignition_off"
@@ -49,7 +52,7 @@
     "long_press_message_count": 5,
     "extended_long_press_message_count": 30,
     "shutdown_delay_ignition_off_seconds": 5,
-    "time_sync_threshold_minutes": 1.0,
+    "time_sync_threshold_minutes": 0.1,
     "daynight_cooldown_seconds": 10
   },
   "mmi_scroll_commands": [
@@ -107,8 +110,8 @@
     }
   },
   "source_data": {
-    "tv_mode_identifier": "0x37",
-    "play_key": "KEY_X",
-    "pause_key": "KEY_C"
+     "tv_mode_identifier": "0x37",
+     "play_key": "KEY_X",
+     "pause_key": "KEY_C"
   }
 }
