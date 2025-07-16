@@ -1,5 +1,0 @@
-python-can
-pyserial
-python-uinput
-pytz
-unidecode
