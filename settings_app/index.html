@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CAN Bus Settings</title>
+    <style>
+        :root {
+            --bg-color: #1a1a1a; --text-color: #e0e0e0; --focus-bg-color: #007bff;
+            --focus-text-color: #ffffff; --edit-bg-color: #ffc107; --edit-text-color: #000000;
+            --border-color: #444; --header-color: #00aaff; --readonly-color: #888;
+        }
+        body { font-family: monospace; background-color: var(--bg-color); color: var(--text-color); margin: 0; padding: 10px; }
+        .container { width: 100%; max-width: 800px; margin: auto; }
+        h1 { text-align: center; color: var(--header-color); }
+        fieldset { border: 2px solid var(--border-color); padding: 10px; margin-bottom: 15px; }
+        legend { color: var(--header-color); padding: 0 10px; font-size: 1.2em; font-weight: bold; }
+        .menu-item { display: flex; justify-content: space-between; padding: 10px; font-size: 1.1em; border: 2px solid transparent; }
+        .menu-item.focused { background-color: var(--focus-bg-color); color: var(--focus-text-color); }
+        .menu-item .value { font-weight: bold; }
+        .menu-item .value.editing { background-color: var(--edit-bg-color); color: var(--edit-text-color); padding: 0 5px; }
+        .menu-item.readonly .value { color: var(--readonly-color); }
+        .action-item { justify-content: center !important; font-weight: bold; font-size: 1.2em; margin-top: 10px;}
+        #status { text-align: center; margin-top: 15px; padding: 10px; font-weight: bold; display: none; color: white; }
+        .status-success { background-color: #28a745; } .status-error { background-color: #dc3545; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>RNS-E Control Settings</h1>
+        <div id="menu-container"></div>
+        <div id="status"></div>
+    </div>
+    <script>
+        // --- DATA STORAGE ---
+        let fullConfig = {}, validKeys = [], timezones = [];
+        let menuItems = [], currentFocusIndex = 0, isEditMode = false;
+        const menuContainer = document.getElementById('menu-container');
+
+        // --- ITEM GENERATION HELPERS ---
+        const createMenuItem = (opts) => {
+            const item = document.createElement('div');
+            item.className = `menu-item ${opts.isReadonly ? 'readonly' : ''}`;
+            // Store data needed for interaction
+            Object.keys(opts.dataset).forEach(key => item.dataset[key] = opts.dataset[key]);
+            
+            const label = document.createElement('span');
+            label.className = 'label';
+            label.textContent = opts.label;
+
+            const value = document.createElement('span');
+            value.className = 'value';
+            value.textContent = opts.value;
+            
+            item.appendChild(label);
+            item.appendChild(value);
+            return item;
+        };
+
+        const createSection = (title, items) => {
+            const fieldset = document.createElement('fieldset');
+            const legend = document.createElement('legend');
+            legend.textContent = title;
+            fieldset.appendChild(legend);
+            items.forEach(item => fieldset.appendChild(item));
+            return fieldset;
+        };
+
+        // --- INITIALIZATION ---
+        document.addEventListener('DOMContentLoaded', async () => {
+            showStatus("Loading...", false);
+            try {
+                const responses = await Promise.all([
+                    fetch('/api/config'), fetch('/api/valid_keys'), fetch('/api/timezones')
+                ]);
+                if (responses.some(res => !res.ok)) throw new Error('Failed to load initial data.');
+                
+                fullConfig = await responses[0].json();
+                validKeys = ['None', ...(await responses[1].json())];
+                timezones = await responses[2].json();
+                
+                renderMenu();
+                showStatus("Ready.", false);
+                setTimeout(() => status.style.display = 'none', 1000);
+            } catch (error) {
+                showStatus(`Error: ${error.message}`, true);
+            }
+        });
+
+        // --- UI RENDERING ---
+        function renderMenu() {
+            menuContainer.innerHTML = '';
+            
+            // --- FEATURES ---
+            const featureItems = [
+                createMenuItem({ label: "Day/Night Mode", value: fullConfig.features.day_night_mode ? 'On' : 'Off', dataset: { type: 'boolean', path: 'features.day_night_mode' } }),
+                createMenuItem({ label: "Time Sync", value: fullConfig.features.time_sync.enabled ? 'On' : 'Off', dataset: { type: 'boolean', path: 'features.time_sync.enabled' } }),
+                createMenuItem({ label: "└ Time Format", value: fullConfig.features.time_sync.data_format, dataset: { type: 'select', path: 'features.time_sync.data_format', options: 'old_logic,new_logic' } }),
+                createMenuItem({ label: "Auto Shutdown", value: fullConfig.features.auto_shutdown.enabled ? 'On' : 'Off', dataset: { type: 'boolean', path: 'features.auto_shutdown.enabled' } }),
+                createMenuItem({ label: "└ Shutdown Trigger", value: fullConfig.features.auto_shutdown.trigger, dataset: { type: 'select', path: 'features.auto_shutdown.trigger', options: 'ignition_off,key_pulled' } }),
+                createMenuItem({ label: "TV Simulation", value: fullConfig.features.tv_simulation.enabled ? 'On' : 'Off', dataset: { type: 'boolean', path: 'features.tv_simulation.enabled' } }),
+                createMenuItem({ label: "Source Controls", value: fullConfig.features.source_controls ? 'On' : 'Off', dataset: { type: 'boolean', path: 'features.source_controls' } }),
+                createMenuItem({ label: "Debug Mode", value: fullConfig.features.debug_mode ? 'On' : 'Off', dataset: { type: 'boolean', path: 'features.debug_mode' } }),
+                createMenuItem({ label: "Car Time Zone", value: fullConfig.features.car_time_zone, dataset: { type: 'select', path: 'features.car_time_zone', options: timezones.join(',') } }),
+            ];
+            menuContainer.appendChild(createSection('Features', featureItems));
+            
+            // --- KEY MAPPINGS ---
+            const keyMapItems = [];
+            const keyMapGroups = {"MMI Short": "mmi_short", "MMI Long": "mmi_long", "MFSW": "mfsw"};
+            for (const [groupName, key] of Object.entries(keyMapGroups)) {
+                for (const [keyId, currentKey] of Object.entries(fullConfig.key_mappings[key])) {
+                     keyMapItems.push(createMenuItem({ label: `${groupName}: ${keyId}`, value: currentKey || 'None', dataset: { type: 'select', path: `key_mappings.${key}.${keyId}`, options: 'validKeys' } }));
+                }
+            }
+            menuContainer.appendChild(createSection('Key Mappings', keyMapItems));
+
+            // --- THRESHOLDS ---
+            const thresholdItems = [];
+            for (const [key, value] of Object.entries(fullConfig.thresholds)) {
+                thresholdItems.push(createMenuItem({ label: key, value: value, dataset: { type: 'number', path: `thresholds.${key}`, step: (key.includes('seconds') || key.includes('period') ? 0.1 : 1) } }));
+            }
+            menuContainer.appendChild(createSection('Timings & Thresholds', thresholdItems));
+
+            // --- ADVANCED (Read-Only) ---
+            const advancedItems = [
+                createMenuItem({label: "CAN Interface", value: fullConfig.can_interface, dataset:{}, isReadonly: true}),
+                ...Object.entries(fullConfig.can_ids).map(([k,v]) => createMenuItem({label: `CAN ID: ${k}`, value: v, dataset:{}, isReadonly: true}))
+            ];
+            menuContainer.appendChild(createSection('Advanced (Read-Only)', advancedItems));
+
+            // --- ACTIONS ---
+            const actions = createMenuItem({ label: "[ Save and Apply ]", value: "", dataset: { type: 'action', action: 'save' } });
+            actions.classList.add('action-item');
+            menuContainer.appendChild(actions);
+
+            menuItems = Array.from(menuContainer.querySelectorAll('.menu-item'));
+            updateFocus();
+        }
+
+        // --- DYNAMICALLY GET/SET NESTED VALUES ---
+        const getPathValue = (path) => path.split('.').reduce((o, k) => o && o[k], fullConfig);
+        const setPathValue = (path, value) => {
+            const keys = path.split('.');
+            let obj = fullConfig;
+            for (let i = 0; i < keys.length - 1; i++) {
+                obj = obj[keys[i]];
+            }
+            obj[keys[keys.length - 1]] = value;
+        };
+
+        // --- EVENT HANDLING ---
+        function updateFocus() {
+            menuItems.forEach((item, index) => {
+                item.classList.remove('focused');
+                if (index === currentFocusIndex) {
+                    item.classList.add('focused');
+                    item.scrollIntoView({ block: 'center', behavior: 'smooth' });
+                }
+            });
+        }
+
+        function handleValueChange(direction) {
+            const item = menuItems[currentFocusIndex];
+            const { type, path, options, step } = item.dataset;
+            const valueSpan = item.querySelector('.value');
+            let currentValue = getPathValue(path);
+            let newValue;
+
+            if (type === 'boolean') {
+                newValue = !currentValue;
+            } else if (type === 'select') {
+                const opts = options === 'validKeys' ? validKeys : options.split(',');
+                let nextIndex = opts.indexOf(currentValue) + direction;
+                if (nextIndex >= opts.length) nextIndex = 0;
+                if (nextIndex < 0) nextIndex = opts.length - 1;
+                newValue = opts[nextIndex];
+            } else if (type === 'number') {
+                newValue = parseFloat((currentValue + (direction * parseFloat(step))).toFixed(2));
+            }
+
+            setPathValue(path, newValue === 'None' ? null : newValue);
+            valueSpan.textContent = type === 'boolean' ? (newValue ? 'On' : 'Off') : (newValue ?? 'None');
+        }
+
+        document.addEventListener('keydown', (e) => {
+            e.preventDefault();
+            const item = menuItems[currentFocusIndex];
+            const itemType = item.dataset.type;
+
+            if (isEditMode) {
+                if (['Escape', 'Enter'].includes(e.key)) {
+                    isEditMode = false;
+                    item.querySelector('.value').classList.remove('editing');
+                } else if (['ArrowUp', 'ArrowDown'].includes(e.key)) {
+                    handleValueChange(e.key === 'ArrowUp' ? 1 : -1);
+                }
+            } else { // Navigation mode
+                switch (e.key) {
+                    case 'ArrowDown': currentFocusIndex = (currentFocusIndex + 1) % menuItems.length; break;
+                    case 'ArrowUp': currentFocusIndex = (currentFocusIndex - 1 + menuItems.length) % menuItems.length; break;
+                    case 'Enter':
+                        if (item.classList.contains('readonly')) break;
+                        if (itemType === 'action') {
+                            handleAction(item.dataset.action);
+                        } else if (itemType === 'boolean') {
+                            handleValueChange(1); // Just toggle it
+                        } else {
+                            isEditMode = true;
+                            item.querySelector('.value').classList.add('editing');
+                        }
+                        break;
+                }
+                updateFocus();
+            }
+        });
+        
+        async function handleAction(action) {
+             showStatus("Working...", false);
+             const isSave = action === 'save';
+             const url = isSave ? '/api/config' : '/api/reset';
+             const method = 'POST';
+             const body = isSave ? JSON.stringify(fullConfig) : null;
+             
+             try {
+                const response = await fetch(url, { method, headers: {'Content-Type': 'application/json'}, body });
+                const result = await response.json();
+                if (!response.ok) throw new Error(result.error);
+                showStatus(result.message, false);
+                if (!isSave) setTimeout(() => window.location.reload(), 2000);
+             } catch (error) {
+                showStatus(`Error: ${error.message}`, true);
+             }
+        }
+        
+        function showStatus(message, isError) {
+            const s = document.getElementById('status');
+            s.textContent = message;
+            s.className = isError ? 'status-error' : 'status-success';
+            s.style.display = 'block';
+        }
+    </script>
+</body>
+</html>
