@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 #
-# settings_app_windows.py (Full Version)
+# settings_app_windows.py
 #
 import json
 import os
 import shutil
 from flask import Flask, jsonify, render_template, request
 
-# --- Configuration for Windows Test ---
+# --- Configuration for Windows Test ADD YOUR config.json PATH C:/Users/... ---
 CONFIG_PATH = 'config.json'
 CONFIG_BACKUP_PATH = 'config.json.bak'
 app = Flask(__name__, template_folder='.')
