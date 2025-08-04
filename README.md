@@ -364,3 +364,8 @@ journalctl -u keyboard-control.service
 ```
 
 Look for `Traceback` errors, `Permission denied`, or `No such file or directory`. These will tell you exactly what is wrong. Common issues include typos in file paths or incorrect permissions.
+
+If can can_keybaord_control.py starts with this error : `OSError: [Errno 19] Failed to open the uinput device: No such device` This will solve it: 
+```bash
+echo 'uinput' | sudo tee /etc/modules-load.d/uinput.conf
+```
