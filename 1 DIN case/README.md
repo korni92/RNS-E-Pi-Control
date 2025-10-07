@@ -7,3 +7,9 @@ Case for 1 Din Case for the Pi
 <img width="1024" height="768" alt="Box_V3_2025-Oct-07_12-55-16AM-000_CustomizedView41207855647" src="https://github.com/user-attachments/assets/68177433-6289-4415-8aae-4d9abe3928ed" />
 
 Parts list:
+- M3x4,5
+- M3x6,5
+- M2,5x25,10
+- M2,5 nut
+- TE 1-1355154-1 connector
+- M2,5 and M3 melting sockets
