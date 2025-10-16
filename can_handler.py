@@ -1,17 +1,11 @@
 #!/usr/bin/env python3
 #
-# can_handler.py
+# can_handler.py (Refactored)
 #
-# This service acts as the central CAN bus reader and ZeroMQ publisher.
-# It reads all messages from the specified CAN interface and broadcasts them
-# over a ZeroMQ PUB socket. Other scripts can subscribe to this stream
-# to receive CAN data without needing direct hardware access.
-#
-# Features:
-#  - Robust, retrying initialization for both CAN and ZeroMQ.
-#  - Automatic recovery from CAN bus errors.
-#  - Graceful shutdown and configuration reloading via system signals.
-#  - Runs as a systemd service, logging to a dedicated file.
+# This service acts as the central CAN bus gateway.
+# - Reads all messages from the CAN interface and broadcasts them via a ZMQ PUB socket.
+# - Listens on a ZMQ PULL socket for outgoing messages and sends them to the CAN bus.
+# This centralizes all hardware interaction for efficiency and robustness.
 #
 
 import can
@@ -29,7 +23,7 @@ CONFIG = {}
 CAN_BUS = None
 ZMQ_CONTEXT = None
 ZMQ_PUB_SOCKET = None
-
+ZMQ_PULL_SOCKET = None # NEW: Socket to receive messages to be sent
 
 # --- Logging Setup ---
 def setup_logging():
@@ -60,9 +54,11 @@ def load_and_initialize_config(config_path='/home/pi/config.json'):
         with open(config_path, 'r') as f:
             config_data = json.load(f)
 
+        # MODIFIED: Added ZMQ send address to config
         CONFIG = {
             'can_interface': config_data['can_interface'],
-            'zmq_address': config_data['zmq']['publish_address']
+            'zmq_publish_address': config_data['zmq']['publish_address'],
+            'zmq_send_address': config_data['zmq']['send_address']
         }
         logger.info("Configuration loaded successfully.")
         return True
@@ -92,28 +88,42 @@ def initialize_can_bus(retries=5, delay=5):
     logger.critical("Could not initialize CAN bus after multiple retries.")
     return False
 
-def initialize_zmq_publisher():
-    """Initializes the ZeroMQ publisher socket."""
-    global ZMQ_CONTEXT, ZMQ_PUB_SOCKET
+# MODIFIED: Unified ZMQ socket initialization
+def initialize_zmq_sockets():
+    """Initializes all required ZeroMQ sockets."""
+    global ZMQ_CONTEXT, ZMQ_PUB_SOCKET, ZMQ_PULL_SOCKET
     try:
-        logger.info(f"Binding ZeroMQ publisher to {CONFIG['zmq_address']}...")
         ZMQ_CONTEXT = zmq.Context()
+        
+        # Publisher for broadcasting received CAN messages
+        logger.info(f"Binding ZeroMQ publisher to {CONFIG['zmq_publish_address']}...")
         ZMQ_PUB_SOCKET = ZMQ_CONTEXT.socket(zmq.PUB)
-        ZMQ_PUB_SOCKET.set_hwm(1000)  # Set High Water Mark to prevent message loss
-        ZMQ_PUB_SOCKET.bind(CONFIG['zmq_address'])
+        ZMQ_PUB_SOCKET.set_hwm(1000)
+        ZMQ_PUB_SOCKET.bind(CONFIG['zmq_publish_address'])
         logger.info("ZeroMQ publisher bound successfully.")
+        
+        # PULL socket to receive outgoing CAN messages from other services
+        logger.info(f"Binding ZeroMQ PULL socket to {CONFIG['zmq_send_address']}...")
+        ZMQ_PULL_SOCKET = ZMQ_CONTEXT.socket(zmq.PULL)
+        ZMQ_PULL_SOCKET.bind(CONFIG['zmq_send_address'])
+        logger.info("ZeroMQ PULL socket bound successfully.")
+        
         return True
     except zmq.ZMQError as e:
-        logger.critical(f"Failed to initialize ZeroMQ publisher: {e}")
+        logger.critical(f"Failed to initialize ZeroMQ sockets: {e}")
         return False
 
+# MODIFIED: Teardown also cleans up the new socket
 def teardown_resources():
     """Gracefully closes all active resources."""
-    global CAN_BUS, ZMQ_PUB_SOCKET, ZMQ_CONTEXT
+    global CAN_BUS, ZMQ_PUB_SOCKET, ZMQ_PULL_SOCKET, ZMQ_CONTEXT
     logger.info("Tearing down resources...")
     if ZMQ_PUB_SOCKET and not ZMQ_PUB_SOCKET.closed:
         ZMQ_PUB_SOCKET.close()
         logger.info("ZMQ publisher socket closed.")
+    if ZMQ_PULL_SOCKET and not ZMQ_PULL_SOCKET.closed:
+        ZMQ_PULL_SOCKET.close()
+        logger.info("ZMQ PULL socket closed.")
     if ZMQ_CONTEXT and not ZMQ_CONTEXT.closed:
         ZMQ_CONTEXT.term()
         logger.info("ZMQ context terminated.")
@@ -154,7 +164,7 @@ def main():
 
     setup_signal_handlers()
 
-    if not initialize_zmq_publisher() or not initialize_can_bus():
+    if not initialize_zmq_sockets() or not initialize_can_bus():
         teardown_resources()
         sys.exit(1)
 
@@ -164,42 +174,55 @@ def main():
 
     while RUNNING:
         try:
-            # Handle configuration reload requests from the signal handler
             if RELOAD_CONFIG:
                 logger.info("Reloading configuration...")
                 teardown_resources()
                 load_and_initialize_config()
-                initialize_zmq_publisher()
+                initialize_zmq_sockets()
                 initialize_can_bus()
                 RELOAD_CONFIG = False
                 logger.info("Configuration reload complete.")
 
-            # Ensure CAN bus is healthy, reconnect if necessary
             if CAN_BUS is None:
                 logger.warning("CAN bus is not available. Attempting to reconnect...")
                 if not initialize_can_bus():
-                    time.sleep(10) # Wait before next attempt
+                    time.sleep(10) 
                     continue
+            
+            # --- MODIFIED: Handle incoming and outgoing messages ---
 
-            # Receive a CAN message
-            message = CAN_BUS.recv(timeout=1.0)
+            # 1. Receive from CAN and publish to ZMQ
+            message = CAN_BUS.recv(timeout=0.01) # Use a short timeout
             if message:
-                # Prepare the message dictionary
                 msg_dict = {
                     "timestamp": message.timestamp,
                     "arbitration_id": message.arbitration_id,
                     "dlc": message.dlc,
                     "data_hex": message.data.hex()
                 }
-                # Publish the message with its CAN ID as the topic
                 topic = f"CAN_{message.arbitration_id:03X}"
                 ZMQ_PUB_SOCKET.send_multipart([
                     topic.encode('utf-8'),
                     json.dumps(msg_dict).encode('utf-8')
                 ])
                 message_count += 1
+            
+            # 2. Receive from ZMQ and send to CAN (non-blocking)
+            try:
+                parts = ZMQ_PULL_SOCKET.recv_multipart(flags=zmq.NOBLOCK)
+                if len(parts) == 2:
+                    can_id = int(parts[0].decode())
+                    data_hex = parts[1].decode()
+                    msg_to_send = can.Message(
+                        arbitration_id=can_id,
+                        data=bytes.fromhex(data_hex),
+                        is_extended_id=False
+                    )
+                    CAN_BUS.send(msg_to_send)
+                    logger.debug(f"Sent CAN message from ZMQ: ID={can_id:03X}, Data={data_hex}")
+            except zmq.Again:
+                pass # No outgoing messages waiting
 
-            # Log message count periodically
             if time.time() - last_log_time > 60:
                 logger.info(f"Published {message_count} messages in the last minute.")
                 message_count = 0
@@ -209,11 +232,11 @@ def main():
             logger.error(f"CAN bus error occurred: {e}. Attempting to recover.")
             if CAN_BUS:
                 CAN_BUS.shutdown()
-            CAN_BUS = None # Signal to the loop to re-initialize
+            CAN_BUS = None 
             time.sleep(5)
         except Exception as e:
             logger.critical(f"An unexpected critical error occurred: {e}", exc_info=True)
-            break # Exit on unknown critical errors
+            break 
 
     teardown_resources()
     logger.info("can_handler.py has finished.")
