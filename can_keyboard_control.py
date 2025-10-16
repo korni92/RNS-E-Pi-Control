@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
 #
-# can_keyboard_control.py
+# can_keyboard_control.py (Refactored)
 #
 # Listens for specific CAN bus messages published by can_handler.py via ZeroMQ
 # to translate car controls (MMI, MFSW) into keyboard presses and system commands.
 #
 # This script is designed to run as a systemd service and uses python-uinput.
-# It uses a message counter logic and a global cooldown for robust press detection.
-# Version: Final/Robust with Precise Source Toggle logic
+# Version: 2.0.0 with robust uinput permission handling.
 #
 
 import zmq
@@ -30,6 +29,7 @@ CONFIG = {}
 
 # --- Logging Setup ---
 def setup_logging():
+    """Configures logging for the service."""
     logging.basicConfig(
         level=logging.INFO,
         format='%(asctime)s [%(levelname)s] %(message)s',
@@ -41,6 +41,7 @@ logger = setup_logging()
 
 # --- State Management Class ---
 class ControlState:
+    """Manages the runtime state of button presses and source activity."""
     def __init__(self):
         self.mmi_press_counters = {}
         self.mmi_long_action_fired = {}
@@ -52,11 +53,13 @@ class ControlState:
         self.last_status_log_time = time.time()
 
     def reset_mmi_state(self, mmi_command):
+        """Resets all tracking variables for a specific MMI command."""
         self.mmi_press_counters.pop(mmi_command, None)
         self.mmi_long_action_fired.pop(mmi_command, None)
         self.mmi_extended_action_fired.pop(mmi_command, None)
 
     def log_periodic_status(self):
+        """Logs the current source activity status."""
         active_source = 'Unknown'
         if self.is_pi_source_active is True: active_source = 'Active (Pi)'
         elif self.is_pi_source_active is False: active_source = 'Inactive (Other)'
@@ -65,12 +68,14 @@ class ControlState:
 
 # --- Configuration Handling ---
 def parse_key(key_string):
+    """Safely parses a key name string from config into a uinput key object."""
     if not key_string: return None
     key = getattr(uinput, key_string, None)
     if not key: logger.warning(f"Invalid uinput key name '{key_string}' in config. Ignored.")
     return key
 
 def load_and_initialize_config(config_path='/home/pi/config.json'):
+    """Loads and validates the JSON configuration file."""
     global CONFIG, FEATURES
     try:
         with open(config_path, 'r') as f: cfg = json.load(f)
@@ -109,6 +114,7 @@ def load_and_initialize_config(config_path='/home/pi/config.json'):
 
 # --- Core Logic Functions ---
 def initialize_zmq_subscriber():
+    """Initializes and configures the ZeroMQ subscriber socket."""
     global ZMQ_CONTEXT, ZMQ_SUB_SOCKET
     try:
         logger.info(f"Connecting ZeroMQ subscriber to {CONFIG['zmq_address']}...")
@@ -135,6 +141,7 @@ def initialize_zmq_subscriber():
         return False
 
 def get_all_possible_keys():
+    """Aggregates all unique keys from config for uinput device creation."""
     keys = set()
     for key_map in [CONFIG['mmi_short_map'], CONFIG['mmi_long_map'], CONFIG['mfsw_map']]:
         for key in key_map.values():
@@ -144,22 +151,33 @@ def get_all_possible_keys():
     logger.info(f"Found {len(keys)} unique keys to register for the virtual device.")
     return list(keys)
 
+# MODIFIED: Added robust permission checking and fixing for /dev/uinput
 def initialize_uinput_device():
+    """
+    Initializes the virtual keyboard device, ensuring correct permissions.
+    """
     uinput_path = "/dev/uinput"
-    for _ in range(10): 
-        if os.path.exists(uinput_path):
-            logger.info(f"'{uinput_path}' found.")
-            break
-        logger.warning(f"Waiting for '{uinput_path}' to become available...")
-        time.sleep(1)
-    else:
-        logger.critical(f"FATAL: Device '{uinput_path}' not found after waiting.")
+    if not os.path.exists(uinput_path):
+        logger.critical(f"FATAL: Device '{uinput_path}' not found. Is the uinput module loaded?")
+        return None
+
+    try:
+        # Check permissions and attempt to fix them if incorrect
+        result = subprocess.run(['stat', '-c', '%a', uinput_path], capture_output=True, text=True, check=True)
+        if '666' not in result.stdout:
+            logger.warning(f"Permissions for {uinput_path} are incorrect ({result.stdout.strip()}). Attempting to fix...")
+            subprocess.run(['sudo', 'modprobe', 'uinput'], check=True)
+            subprocess.run(['sudo', 'chmod', '666', uinput_path], check=True)
+            logger.info(f"Permissions for {uinput_path} set to 666.")
+    except (subprocess.CalledProcessError, FileNotFoundError) as e:
+        logger.critical(f"FATAL: Failed to check or set permissions for {uinput_path}. Error: {e}")
+        logger.critical("Please ensure 'sudo' is available and the user has permissions.")
         return None
 
     try:
         events = get_all_possible_keys()
         if not events:
-            logger.warning("No keys mapped. Keyboard device not created.")
+            logger.warning("No keys mapped in config. Virtual keyboard not created.")
             return None
         
         logger.info("Creating virtual keyboard device...")
@@ -171,6 +189,7 @@ def initialize_uinput_device():
         return None
 
 def press_key(key):
+    """Simulates a key press (down and up) on the virtual device."""
     if not key or not UINPUT_DEVICE: return
     try:
         logger.info(f"Simulating key press: {key}")
@@ -179,6 +198,7 @@ def press_key(key):
         logger.error(f"Failed to simulate key '{key}': {e}")
 
 def run_command(command_str):
+    """Executes a shell command from the configuration."""
     if not command_str: return
     try:
         logger.info(f"Executing system command: {command_str}")
@@ -230,7 +250,7 @@ def handle_mmi_message(msg, state):
                 press_key(key)
                 state.last_mmi_action_info = {'command': cmd, 'time': now}
         
-        state.mmi_press_counters.pop(cmd, None)
+        state.reset_mmi_state(cmd) # Reset on release regardless of action
 
 def handle_mfsw_message(msg, state):
     if msg['dlc'] < 2: return
@@ -252,12 +272,9 @@ def handle_mfsw_message(msg, state):
 
 def handle_source_message(msg, state):
     """Processes RNS-E source messages to auto-play/pause media."""
-    # We need at least 4 bytes to check the 4th one (index 3)
     if msg['dlc'] < 4: return
     data = bytes.fromhex(msg['data_hex'])
     
-    # Precise check: Examine the 4th byte (index 3) for the TV mode identifier.
-    # This corresponds to RA4_Radio_Para2 in the DBC and is more robust.
     current_mode_byte = data[3]
     is_pi_active = (current_mode_byte == CONFIG.get('tv_mode_id'))
 
@@ -270,16 +287,19 @@ def handle_source_message(msg, state):
 
 # --- Signal Handling and Main Loop ---
 def setup_signal_handlers():
+    """Sets up handlers for graceful shutdown."""
     signal.signal(signal.SIGINT, shutdown_handler)
     signal.signal(signal.SIGTERM, shutdown_handler)
 
 def shutdown_handler(signum, frame):
+    """Flags the application to exit the main loop."""
     global RUNNING
     if RUNNING:
         logger.info(f"Shutdown signal {signum} received. Cleaning up...")
         RUNNING = False
 
 def main():
+    """Main application entry point and loop."""
     global UINPUT_DEVICE, RUNNING
 
     logger.info("Starting can_keyboard_control.py service...")
@@ -287,7 +307,7 @@ def main():
     
     UINPUT_DEVICE = initialize_uinput_device()
     if not UINPUT_DEVICE:
-        logger.warning("Continuing without virtual keyboard. Only logging will occur.")
+        logger.warning("Continuing without virtual keyboard. Only logging and system commands will occur.")
     
     setup_signal_handlers()
     state = ControlState()
@@ -303,7 +323,6 @@ def main():
                 msg_dict = json.loads(msg_bytes.decode('utf-8'))
                 can_id = msg_dict.get('arbitration_id')
                 
-                # Check for feature flags before calling handlers
                 if can_id == CONFIG['can_ids'].get('mmi') and FEATURES.get('mmi_controls', False):
                     handle_mmi_message(msg_dict, state)
                 elif can_id == CONFIG['can_ids'].get('mfsw') and FEATURES.get('mfsw_controls', False):
