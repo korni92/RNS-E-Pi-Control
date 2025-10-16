@@ -1,0 +1,16 @@
+[Unit]
+Description=RNS-E CAN-Bus Base Functionality
+Requires=can-handler.service
+After=can-handler.service
+BindsTo=can-handler.service
+
+[Service]
+ExecStart=/usr/bin/python3 /home/pi/RNS-E-Pi-Control/can_base_function.py
+WorkingDirectory=/home/pi/RNS-E-Pi-Control
+Restart=on-failure
+RestartSec=3
+User=pi
+Group=pi
+
+[Install]
+WantedBy=multi-user.target
