@@ -72,8 +72,8 @@
       "0,1": "KEY_H"
     },
     "mmi_long": {
-      "1,0": null,
-      "2,0": null,
+      "1,0": "KEY_LEFT",
+      "2,0": "KEY_RIGHT",
       "64,0": null,
       "128,0": "KEY_M",
       "0,16": null,
@@ -115,3 +115,4 @@
      "pause_key": "KEY_C"
   }
 }
+
