@@ -1,10 +1,12 @@
-# RNS-E Pi Control for Crankshaft-NG
+# RNS-E Pi Control for Crankshaft-NG/ Hudiy
 
-**Last Updated: June 26, 2025**
+**Last Updated: October 17, 2025**
 
-A comprehensive suite of `systemd` services designed to deeply integrate a Raspberry Pi (running Crankshaft or a similar OS) with an Audi RNS-E head unit and the car's CAN bus.
+A comprehensive suite of `systemd` services designed to deeply integrate a Raspberry Pi (running Crankshaft, Hudiy or a similar OS) with an Audi RNS-E head unit and the car's CAN bus.
 
 This project goes beyond simple button presses, providing robust, persistent features that make the Raspberry Pi feel like a native part of the vehicle's electronics ecosystem. It is designed for stability, efficiency, and safety, with a focus on protecting your SD card and ensuring predictable behavior.
+
+I Just started to check compatibility with Hudiy 
 
   
 ![RNS-E running AA](https://github.com/user-attachments/assets/86b7dc3b-a92d-40d9-ac3f-57918fd4ecac)
