@@ -30,7 +30,7 @@
       "trigger": "ignition_off"
     },
     "tv_simulation": {
-      "enabled": false
+      "enabled": true
     },
     "fis_display": {
       "enabled": true,
@@ -116,6 +116,7 @@
      "pause_key": "KEY_C"
   }
 }
+
 
 
 
